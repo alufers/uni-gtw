@@ -64,3 +64,4 @@ build/
 .claude
 managed_components
 main/web/dist
+main/web/node_modules

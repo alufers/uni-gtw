@@ -9,9 +9,46 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
-#include "json_generator.h"
 
 static const char *TAG = "webserver";
+
+/* ── JSON helpers ────────────────────────────────────────────────────────── */
+
+/*
+ * Append a JSON-escaped version of `src` into `dst`, writing at most
+ * `cap-1` bytes and always null-terminating. Returns the number of
+ * characters written (excluding NUL).  Escapes \n \r \t \" \\ and
+ * control characters as \uXXXX.
+ */
+static size_t json_escape(char *dst, size_t cap, const char *src)
+{
+    size_t n = 0;
+    for (; *src && n + 7 < cap; src++) {
+        unsigned char c = (unsigned char)*src;
+        if      (c == '"')  { dst[n++] = '\\'; dst[n++] = '"';  }
+        else if (c == '\\') { dst[n++] = '\\'; dst[n++] = '\\'; }
+        else if (c == '\n') { dst[n++] = '\\'; dst[n++] = 'n';  }
+        else if (c == '\r') { dst[n++] = '\\'; dst[n++] = 'r';  }
+        else if (c == '\t') { dst[n++] = '\\'; dst[n++] = 't';  }
+        else if (c < 0x20)  { n += snprintf(dst + n, cap - n, "\\u%04X", c); }
+        else                { dst[n++] = (char)c; }
+    }
+    dst[n] = '\0';
+    return n;
+}
+
+/*
+ * Build {"cmd":"console","payload":"<escaped>"} into buf (size cap).
+ * Returns length written.
+ */
+static size_t build_console_json(char *buf, size_t cap, const char *msg)
+{
+    size_t n = 0;
+    n += snprintf(buf + n, cap - n, "{\"cmd\":\"console\",\"payload\":\"");
+    n += json_escape(buf + n, cap - n, msg);
+    n += snprintf(buf + n, cap - n, "\"}");
+    return n;
+}
 
 /* ── Config ──────────────────────────────────────────────────────────────── */
 
@@ -123,20 +160,13 @@ static void ws_send_history_async(int fd)
     char  *history = history_snapshot(&history_len);
     if (!history) return;
 
-    /* Build JSON: {"cmd":"console","payload":"<history>"}.
+    /* Build JSON: {"cmd":"console","payload":"<escaped history>"}.
      * Worst-case escaped payload is 6x (e.g. every char → \uXXXX). */
     size_t json_cap = history_len * 6 + 64;
     char  *json_buf = malloc(json_cap);
     if (!json_buf) { free(history); return; }
 
-    json_gen_str_t jstr;
-    json_gen_str_start(&jstr, json_buf, json_cap, NULL, NULL);
-    json_gen_start_object(&jstr);
-    json_gen_obj_set_string(&jstr, "cmd",     "console");
-    json_gen_obj_set_string(&jstr, "payload", history);
-    json_gen_end_object(&jstr);
-    json_gen_str_end(&jstr);
-
+    build_console_json(json_buf, json_cap, history);
     free(history);
 
     httpd_ws_frame_t pkt = {
@@ -213,7 +243,7 @@ static esp_err_t ws_handler(httpd_req_t *req)
 
 void gtw_console_log(const char *fmt, ...)
 {
-    char msg[CONSOLE_BUF_SIZE];
+    static char msg[CONSOLE_BUF_SIZE];
     va_list args;
     va_start(args, fmt);
     vsnprintf(msg, sizeof(msg), fmt, args);
@@ -228,14 +258,8 @@ void gtw_console_log(const char *fmt, ...)
     xSemaphoreGive(s_ws_mutex);
 
     /* Build JSON and broadcast to connected WS clients. */
-    char json_buf[CONSOLE_BUF_SIZE + 64];
-    json_gen_str_t jstr;
-    json_gen_str_start(&jstr, json_buf, sizeof(json_buf), NULL, NULL);
-    json_gen_start_object(&jstr);
-    json_gen_obj_set_string(&jstr, "cmd",     "console");
-    json_gen_obj_set_string(&jstr, "payload", msg);
-    json_gen_end_object(&jstr);
-    json_gen_str_end(&jstr);
+    static char json_buf[CONSOLE_BUF_SIZE * 6 + 64]; // shit fix
+    build_console_json(json_buf, sizeof(json_buf), msg);
 
     httpd_ws_frame_t ws_pkt = {
         .final      = true,

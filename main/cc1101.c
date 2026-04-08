@@ -239,31 +239,41 @@ static void cc1101_rx_task(void *arg)
             continue;
         }
 
-        cc1101_packet_t pkt;
-        uint8_t tmp_buf[CC1101_PACKET_LEN+2];
-        cc1101_read_burst(CC1101_RXFIFO, tmp_buf, CC1101_PACKET_LEN+2);
-
-        memcpy(pkt.data, tmp_buf, 9); // cut off appended crc check and RSSI
+        uint8_t tmp_buf[CC1101_PACKET_LEN + COSMO_STATUS_BYTES];
+        cc1101_read_burst(CC1101_RXFIFO, tmp_buf, sizeof(tmp_buf));
 
         /* Re-enter RX immediately to avoid missing next packet. */
         cc1101_strobe(CC1101_SRX);
 
-        /* Format hex string: "01 23 45 ..." */
-        char hex[CC1101_PACKET_LEN * 3 + 1];
-        for (int i = 0; i < CC1101_PACKET_LEN; i++)
-            snprintf(hex + i * 3, 4, "%02X ", pkt.data[i]);
-        hex[CC1101_PACKET_LEN * 3 - 1] = '\0'; /* trim trailing space */
+        /* Extract RSSI from first status byte (CC1101 datasheet §10.14.3) */
+        uint8_t rssi_raw = tmp_buf[CC1101_PACKET_LEN];
+        int8_t rssi_dbm = (rssi_raw >= 128)
+                          ? ((int8_t)(rssi_raw - 256) / 2) - 74
+                          : (int8_t)(rssi_raw / 2) - 74;
 
-        /* Format binary string: "00000001 00100011 ..." */
-        char bin[CC1101_PACKET_LEN * 9 + 1];
-        for (int i = 0; i < CC1101_PACKET_LEN; i++) {
-            for (int b = 7; b >= 0; b--)
-                bin[i * 9 + (7 - b)] = ((pkt.data[i] >> b) & 1) ? '1' : '0';
-            bin[i * 9 + 8] = (i < CC1101_PACKET_LEN - 1) ? ' ' : '\0';
+        cosmo_raw_packet_t raw;
+        memcpy(raw.data, tmp_buf, CC1101_PACKET_LEN);
+        raw.rssi = rssi_dbm;
+
+        cosmo_packet_t pkt;
+        if (cosmo_decode(&raw, &pkt) == ESP_OK) {
+            cosmo_packet_log(&pkt);
+        } else {
+            /* Log raw hex for undecodable packets */
+            char hex[CC1101_PACKET_LEN * 3 + 1];
+            for (int i = 0; i < CC1101_PACKET_LEN; i++)
+                snprintf(hex + i * 3, 4, "%02X ", raw.data[i]);
+            hex[CC1101_PACKET_LEN * 3 - 1] = '\0';
+            gtw_console_log("RX (bad pkt) hex: %s rssi=%d dBm", hex, (int)rssi_dbm);
+
+            char bin[CC1101_PACKET_LEN * 9 + 1];
+            for (int i = 0; i < CC1101_PACKET_LEN; i++) {
+                for (int b = 7; b >= 0; b--)
+                    bin[i * 9 + (7 - b)] = ((raw.data[i] >> b) & 1) ? '1' : '0';
+                bin[i * 9 + 8] = (i < CC1101_PACKET_LEN - 1) ? ' ' : '\0';
+            }
+            gtw_console_log("RX (bad pkt) bin: %s rssi=%d dBm", bin, (int)rssi_dbm);
         }
-
-        gtw_console_log("RX hex: %s", hex);
-        gtw_console_log("RX bin: %s", bin);
     }
 }
 
