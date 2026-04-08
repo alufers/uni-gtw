@@ -1,0 +1,2 @@
+dependencies:
+  espressif/json_generator: ">=0.1.0"
