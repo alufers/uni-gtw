@@ -12,13 +12,28 @@
 
 static const char *TAG = "webserver";
 
+/* ── Config ──────────────────────────────────────────────────────────────── */
+
+#define MAX_WS_CLIENTS    8
+#define CONSOLE_BUF_SIZE  512
+#define HISTORY_BUF_SIZE  4096
+
+/* ── State ───────────────────────────────────────────────────────────────── */
+
+static httpd_handle_t    s_server   = NULL;
+static int               s_ws_fds[MAX_WS_CLIENTS];
+static SemaphoreHandle_t s_ws_mutex;
+
+/* Rolling console history – protected by s_ws_mutex */
+static char  s_history[HISTORY_BUF_SIZE];
+static int   s_history_write = 0;
+static bool  s_history_full  = false;
+
 /* ── JSON helpers ────────────────────────────────────────────────────────── */
 
 /*
- * Append a JSON-escaped version of `src` into `dst`, writing at most
- * `cap-1` bytes and always null-terminating. Returns the number of
- * characters written (excluding NUL).  Escapes \n \r \t \" \\ and
- * control characters as \uXXXX.
+ * Append JSON-escaped `src` into `dst` (max cap-1 bytes, always NUL-terminated).
+ * Escapes \n \r \t \" \\ and control characters as \uXXXX.
  */
 static size_t json_escape(char *dst, size_t cap, const char *src)
 {
@@ -37,10 +52,7 @@ static size_t json_escape(char *dst, size_t cap, const char *src)
     return n;
 }
 
-/*
- * Build {"cmd":"console","payload":"<escaped>"} into buf (size cap).
- * Returns length written.
- */
+/* Build {"cmd":"console","payload":"<escaped msg>"} into buf. */
 static size_t build_console_json(char *buf, size_t cap, const char *msg)
 {
     size_t n = 0;
@@ -49,23 +61,6 @@ static size_t build_console_json(char *buf, size_t cap, const char *msg)
     n += snprintf(buf + n, cap - n, "\"}");
     return n;
 }
-
-/* ── Config ──────────────────────────────────────────────────────────────── */
-
-#define MAX_WS_CLIENTS    8
-#define CONSOLE_BUF_SIZE  512
-#define HISTORY_BUF_SIZE  4096
-
-/* ── State ───────────────────────────────────────────────────────────────── */
-
-static httpd_handle_t   s_server   = NULL;
-static int              s_ws_fds[MAX_WS_CLIENTS];
-static SemaphoreHandle_t s_ws_mutex;
-
-/* Rolling console history – protected by s_ws_mutex */
-static char  s_history[HISTORY_BUF_SIZE];
-static int   s_history_write = 0;
-static bool  s_history_full  = false;
 
 /* ── Embedded file handlers ──────────────────────────────────────────────── */
 
@@ -98,17 +93,16 @@ static void history_append_locked(const char *str, size_t len)
 }
 
 /*
- * Build a heap-allocated null-terminated string with the ordered history
- * content (oldest → newest). Returns NULL if nothing stored or OOM.
- * Caller must free the returned buffer.
- * Caller must NOT hold s_ws_mutex.
+ * Build a heap-allocated null-terminated string with ordered history
+ * content (oldest → newest).  Returns NULL if nothing stored or OOM.
+ * Caller must free().  Caller must NOT hold s_ws_mutex.
  */
 static char *history_snapshot(size_t *out_len)
 {
     xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
 
-    int   len  = s_history_full ? HISTORY_BUF_SIZE : s_history_write;
-    int   tail = s_history_write;       /* oldest byte when full */
+    int len  = s_history_full ? HISTORY_BUF_SIZE : s_history_write;
+    int tail = s_history_write;
 
     if (len == 0) {
         xSemaphoreGive(s_ws_mutex);
@@ -116,75 +110,107 @@ static char *history_snapshot(size_t *out_len)
         return NULL;
     }
 
-    char *buf = malloc(len + 1);
+    char *buf = malloc((size_t)len + 1);
     if (buf) {
         if (!s_history_full) {
-            memcpy(buf, s_history, len);
+            memcpy(buf, s_history, (size_t)len);
         } else {
             int first = HISTORY_BUF_SIZE - tail;
-            memcpy(buf, s_history + tail, first);
-            memcpy(buf + first, s_history, tail);
+            memcpy(buf, s_history + tail, (size_t)first);
+            memcpy(buf + first, s_history, (size_t)tail);
         }
         buf[len] = '\0';
     }
 
     xSemaphoreGive(s_ws_mutex);
-
-    *out_len = len;
+    *out_len = (size_t)len;
     return buf;
+}
+
+/* ── WebSocket async-send helpers ────────────────────────────────────────── */
+
+/*
+ * Work struct queued to the httpd task via httpd_queue_work.
+ * The JSON payload is stored as a flexible array member to avoid
+ * an extra allocation per send.
+ */
+typedef struct {
+    httpd_handle_t hd;
+    int            fd;
+    char           json[]; /* NUL-terminated JSON payload */
+} ws_send_work_t;
+
+/*
+ * Runs in the httpd task context.  Sends the frame and frees memory.
+ * On error, triggers session close so ws_handler can clean up the fd.
+ */
+static void ws_send_work(void *arg)
+{
+    ws_send_work_t *w = arg;
+    httpd_ws_frame_t pkt = {
+        .final      = true,
+        .fragmented = false,
+        .type       = HTTPD_WS_TYPE_TEXT,
+        .payload    = (uint8_t *)w->json,
+        .len        = strlen(w->json),
+    };
+    esp_err_t err = httpd_ws_send_frame_async(w->hd, w->fd, &pkt);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "WS send fd=%d failed (%d), closing session", w->fd, err);
+        /* Remove from client list immediately */
+        xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
+        for (int i = 0; i < MAX_WS_CLIENTS; i++)
+            if (s_ws_fds[i] == w->fd) s_ws_fds[i] = -1;
+        xSemaphoreGive(s_ws_mutex);
+        /* Let the httpd tear down the socket */
+        httpd_sess_trigger_close(w->hd, w->fd);
+    }
+    free(w);
+}
+
+/*
+ * Allocate a work item and queue it to the httpd task.
+ * json must be NUL-terminated; it is copied into the work item.
+ */
+static void ws_queue_send(int fd, const char *json)
+{
+    if (!s_server) return;
+    size_t jlen = strlen(json);
+    ws_send_work_t *w = malloc(sizeof(*w) + jlen + 1);
+    if (!w) return;
+    w->hd = s_server;
+    w->fd = fd;
+    memcpy(w->json, json, jlen + 1);
+    if (httpd_queue_work(s_server, ws_send_work, w) != ESP_OK)
+        free(w);
 }
 
 /* ── WebSocket helpers ───────────────────────────────────────────────────── */
 
 static void ws_remove_fd_locked(int fd)
 {
-    for (int i = 0; i < MAX_WS_CLIENTS; i++) {
-        if (s_ws_fds[i] == fd)
-            s_ws_fds[i] = -1;
-    }
+    for (int i = 0; i < MAX_WS_CLIENTS; i++)
+        if (s_ws_fds[i] == fd) s_ws_fds[i] = -1;
 }
 
-/* Callback invoked by httpd after the async history send completes. */
-static void history_send_done(esp_err_t err, int socket, void *arg)
+/*
+ * Send the console history to a newly connected client.
+ * Called from ws_handler (httpd task), queues additional httpd work.
+ */
+static void ws_send_history(int fd)
 {
-    (void)err;
-    (void)socket;
-    free(arg);          /* arg == malloc'd JSON buffer */
-}
+    size_t hist_len;
+    char  *hist = history_snapshot(&hist_len);
+    if (!hist) return;
 
-/* Queue an async send of the console history to the given fd.
- * Safe to call from within the httpd task (GET handler). */
-static void ws_send_history_async(int fd)
-{
-    size_t history_len;
-    char  *history = history_snapshot(&history_len);
-    if (!history) return;
-
-    /* Build JSON: {"cmd":"console","payload":"<escaped history>"}.
-     * Worst-case escaped payload is 6x (e.g. every char → \uXXXX). */
-    size_t json_cap = history_len * 6 + 64;
-    char  *json_buf = malloc(json_cap);
-    if (!json_buf) { free(history); return; }
-
-    build_console_json(json_buf, json_cap, history);
-    free(history);
-
-    httpd_ws_frame_t pkt = {
-        .final      = true,
-        .fragmented = false,
-        .type       = HTTPD_WS_TYPE_TEXT,
-        .payload    = (uint8_t *)json_buf,
-        .len        = strlen(json_buf),
-    };
-
-    /* httpd_ws_send_data_async deep-copies the frame struct (shallow payload
-     * ptr) and invokes history_send_done once sent, which frees json_buf. */
-    esp_err_t err = httpd_ws_send_data_async(s_server, fd, &pkt,
-                                             history_send_done, json_buf);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Failed to queue history send: %d", err);
-        free(json_buf);
+    size_t json_cap = hist_len * 6 + 64;
+    char  *json = malloc(json_cap);
+    if (json) {
+        build_console_json(json, json_cap, hist);
+        ws_queue_send(fd, json);
+        free(json);
     }
+    free(hist);
 }
 
 /* ── WebSocket handler ───────────────────────────────────────────────────── */
@@ -211,12 +237,12 @@ static esp_err_t ws_handler(httpd_req_t *req)
         }
         ESP_LOGI(TAG, "WS client connected fd=%d", fd);
 
-        /* Send buffered history to the new client. */
-        ws_send_history_async(fd);
+        /* Queue history replay to this client */
+        ws_send_history(fd);
         return ESP_OK;
     }
 
-    httpd_ws_frame_t frame = {.type = HTTPD_WS_TYPE_TEXT};
+    httpd_ws_frame_t frame = { .type = HTTPD_WS_TYPE_TEXT };
     esp_err_t ret = httpd_ws_recv_frame(req, &frame, 0);
     if (ret != ESP_OK) return ret;
 
@@ -243,7 +269,7 @@ static esp_err_t ws_handler(httpd_req_t *req)
 
 void gtw_console_log(const char *fmt, ...)
 {
-    static char msg[CONSOLE_BUF_SIZE];
+    char msg[CONSOLE_BUF_SIZE];
     va_list args;
     va_start(args, fmt);
     vsnprintf(msg, sizeof(msg), fmt, args);
@@ -251,38 +277,31 @@ void gtw_console_log(const char *fmt, ...)
 
     ESP_LOGI("gtw", "%s", msg);
 
-    /* Append to rolling history (msg + newline). */
+    /* Append to history and snapshot active fds under the mutex */
     xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
     history_append_locked(msg, strlen(msg));
     history_append_locked("\n", 1);
+    int fds[MAX_WS_CLIENTS];
+    int nfds = 0;
+    for (int i = 0; i < MAX_WS_CLIENTS; i++)
+        if (s_ws_fds[i] != -1) fds[nfds++] = s_ws_fds[i];
     xSemaphoreGive(s_ws_mutex);
 
-    /* Build JSON and broadcast to connected WS clients. */
-    static char json_buf[CONSOLE_BUF_SIZE * 6 + 64]; // shit fix
-    build_console_json(json_buf, sizeof(json_buf), msg);
+    if (nfds == 0 || !s_server) return;
 
-    httpd_ws_frame_t ws_pkt = {
-        .final      = true,
-        .fragmented = false,
-        .type       = HTTPD_WS_TYPE_TEXT,
-        .payload    = (uint8_t *)json_buf,
-        .len        = strlen(json_buf),
-    };
+    /* Build JSON once, then queue a send work item per connected client */
+    size_t json_cap = strlen(msg) * 6 + 64;
+    char  *json = malloc(json_cap);
+    if (!json) return;
+    build_console_json(json, json_cap, msg);
 
-    if (!s_server) return;
+    for (int i = 0; i < nfds; i++)
+        ws_queue_send(fds[i], json);
 
-    xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
-    for (int i = 0; i < MAX_WS_CLIENTS; i++) {
-        if (s_ws_fds[i] == -1) continue;
-        esp_err_t err = httpd_ws_send_frame_async(s_server, s_ws_fds[i], &ws_pkt);
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "WS send failed fd=%d, removing", s_ws_fds[i]);
-            s_ws_fds[i] = -1;
-        }
-    }
-    xSemaphoreGive(s_ws_mutex);
+    free(json);
 }
 
+/* ── Early init (before WiFi) ────────────────────────────────────────────── */
 
 void webserver_early_init(void)
 {
@@ -295,8 +314,6 @@ void webserver_early_init(void)
 
 void webserver_start(void)
 {
-
-
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.lru_purge_enable = true;
 

@@ -12,7 +12,7 @@
 #include "nvs_flash.h"
 
 #include "webserver.h"
-#include "cc1101.h"
+#include "radio.h"
 
 static const char *TAG = "uni-gtw";
 
@@ -75,5 +75,5 @@ void app_main(void)
 
     webserver_early_init();
     wifi_init();
-    cc1101_init();
+    radio_init();
 }

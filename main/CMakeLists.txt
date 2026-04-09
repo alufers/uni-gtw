@@ -6,7 +6,7 @@ idf_component_register(
         "uni-gtw.c"
         "webserver.c"
         "cc1101.c"
-        "cosmo.c"
+        "radio.c"
     INCLUDE_DIRS "."
     REQUIRES
         esp_wifi
@@ -16,6 +16,7 @@ idf_component_register(
         esp_netif
         esp_driver_spi
         esp_driver_gpio
+        cosmo
     EMBED_FILES
         ${WEB_DIST_DIR}/index.html
         ${WEB_DIST_DIR}/app.js
