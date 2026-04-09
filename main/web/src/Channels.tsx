@@ -1,5 +1,6 @@
 import { useState } from "preact/hooks";
 import { Button } from "./Button";
+import { Collapsible } from "./Collapsible";
 
 export type ChannelState =
   | "unknown"
@@ -9,7 +10,8 @@ export type ChannelState =
   | "open"
   | "comfort"
   | "partially_open"
-  | "obstruction";
+  | "obstruction"
+  | "in_motion";
 
 export interface Channel {
   serial: number;
@@ -19,6 +21,7 @@ export interface Channel {
   state: ChannelState;
   rssi: number;
   last_seen_ts: number;
+  position: number | null;
 }
 
 interface ChannelsProps {
@@ -35,6 +38,7 @@ const STATE_LABEL: Record<ChannelState, string> = {
   comfort: "Comfort",
   partially_open: "Partial",
   obstruction: "Obstruction",
+  in_motion: "In Motion",
 };
 
 const STATE_CLASS: Record<ChannelState, string> = {
@@ -46,16 +50,30 @@ const STATE_CLASS: Record<ChannelState, string> = {
   comfort: "text-lime-400",
   partially_open: "text-orange-400",
   obstruction: "text-red-400",
+  in_motion: "text-yellow-300",
 };
 
-const EXTRA_CMDS: { label: string; value: string }[] = [
-  { label: "Up+Down", value: "UP_DOWN" },
-  { label: "Stop+Down", value: "STOP_DOWN" },
-  { label: "Stop Hold", value: "STOP_HOLD" },
-  { label: "Prog", value: "PROG" },
-  { label: "Stop+Up", value: "STOP_UP" },
-  { label: "Request feedback", value: "REQUEST_FEEDBACK" },
-  { label: "NONE btn code", value: "NONE" },
+/* Extra commands in two-column pairs: each sub-array is one row */
+const EXTRA_CMD_ROWS: { label: string; value: string }[][] = [
+  [
+    { label: "Prog", value: "PROG" },
+    { label: "Stop+Up", value: "STOP_UP" },
+  ],
+  [
+    { label: "Up+Down", value: "UP_DOWN" },
+    { label: "Stop+Down", value: "STOP_DOWN" },
+  ],
+  [
+    { label: "Stop Hold", value: "STOP_HOLD" },
+    { label: "Request Position", value: "REQUEST_POSITION" },
+  ],
+];
+
+/* Commands that require an extra_payload (2-way only) */
+const PAYLOAD_CMDS: { label: string; value: string; max: number }[] = [
+  { label: "Set Position", value: "SET_POSITION", max: 100 },
+  { label: "Set Tilt", value: "SET_TILT", max: 255 },
+  { label: "Request Feedback", value: "REQUEST_FEEDBACK", max: 255 },
 ];
 
 function formatLastSeen(ts: number): string {
@@ -74,11 +92,18 @@ function ChannelCard({
   ch: Channel;
   onSend: (msg: object) => void;
 }) {
-  const [extraCmd, setExtraCmd] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [payloadValues, setPayloadValues] = useState<Record<string, number>>(
+    () => Object.fromEntries(PAYLOAD_CMDS.map((c) => [c.value, 0]))
+  );
 
-  const sendCmd = (cmd_name: string) =>
-    onSend({ cmd: "channel_cmd", serial: ch.serial, cmd_name });
+  const sendCmd = (cmd_name: string, extra_payload?: number) =>
+    onSend({
+      cmd: "channel_cmd",
+      serial: ch.serial,
+      cmd_name,
+      ...(extra_payload !== undefined && { extra_payload }),
+    });
 
   const handleDelete = () => {
     if (!confirmDelete) {
@@ -117,6 +142,9 @@ function ChannelCard({
             {ch.rssi} dBm · {formatLastSeen(ch.last_seen_ts)}
           </span>
         )}
+        {ch.proto === "2way" && ch.position !== null && ch.position !== undefined && (
+          <span class="text-lime-400 font-bold">{ch.position}%</span>
+        )}
       </div>
 
       {/* Main controls */}
@@ -136,33 +164,58 @@ function ChannelCard({
         </Button>
       </div>
 
-      {/* Extra commands */}
-      <div class="flex gap-1">
-        <select
-          value={extraCmd}
-          onChange={(e) => setExtraCmd((e.target as HTMLSelectElement).value)}
-          class="flex-1 bg-zinc-800 text-zinc-300 text-xs rounded border border-zinc-700 px-1 py-1"
-        >
-          <option value="">-- Extra cmd --</option>
-          {EXTRA_CMDS.map((c) => (
-            <option key={c.value} value={c.value}>
-              {c.label}
-            </option>
+      {/* Advanced collapsible */}
+      <Collapsible label="Advanced">
+        {/* Two-column button grid */}
+        {EXTRA_CMD_ROWS.map((row, ri) => (
+          <div key={ri} class="flex gap-1">
+            {row.map((c) => (
+              <Button
+                key={c.value}
+                variant="secondary"
+                onClick={() => sendCmd(c.value)}
+                class="flex-1"
+              >
+                {c.label}
+              </Button>
+            ))}
+            {row.length === 1 && <div class="flex-1" />}
+          </div>
+        ))}
+
+        {/* Payload commands — 2-way only */}
+        {ch.proto === "2way" &&
+          PAYLOAD_CMDS.map((c) => (
+            <div key={c.value} class="flex gap-1">
+              <Button
+                variant="secondary"
+                onClick={() => sendCmd(c.value, payloadValues[c.value])}
+                class="flex-1"
+              >
+                {c.label}
+              </Button>
+              <input
+                type="number"
+                min={0}
+                max={c.max}
+                value={payloadValues[c.value]}
+                onInput={(e) =>
+                  setPayloadValues((prev) => ({
+                    ...prev,
+                    [c.value]: Math.min(
+                      c.max,
+                      Math.max(
+                        0,
+                        parseInt((e.target as HTMLInputElement).value) || 0
+                      )
+                    ),
+                  }))
+                }
+                class="w-16 bg-zinc-800 text-zinc-100 border border-zinc-600 rounded px-1 py-1 text-xs text-center"
+              />
+            </div>
           ))}
-        </select>
-        <Button
-          variant="secondary"
-          disabled={!extraCmd}
-          onClick={() => {
-            if (extraCmd) {
-              sendCmd(extraCmd);
-              setExtraCmd("");
-            }
-          }}
-        >
-          Send
-        </Button>
-      </div>
+      </Collapsible>
     </div>
   );
 }
@@ -204,7 +257,7 @@ export function Channels({ channels, onSend }: ChannelsProps) {
             value={newProto}
             onChange={(e) =>
               setNewProto(
-                (e.target as HTMLSelectElement).value as "1way" | "2way",
+                (e.target as HTMLSelectElement).value as "1way" | "2way"
               )
             }
             class="w-full bg-zinc-800 text-zinc-100 border border-zinc-600 rounded px-2 py-1 text-xs mb-2"

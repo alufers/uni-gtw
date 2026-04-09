@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "cJSON.h"
 #include "cosmo/cosmo.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
@@ -30,39 +31,6 @@ static SemaphoreHandle_t s_ws_mutex;
 static char  s_history[HISTORY_BUF_SIZE];
 static int   s_history_write = 0;
 static bool  s_history_full  = false;
-
-/* ── JSON helpers ────────────────────────────────────────────────────────── */
-
-/*
- * Append JSON-escaped `src` into `dst` (max cap-1 bytes, always NUL-terminated).
- * Escapes \n \r \t \" \\ and control characters as \uXXXX.
- */
-static size_t json_escape(char *dst, size_t cap, const char *src)
-{
-    size_t n = 0;
-    for (; *src && n + 7 < cap; src++) {
-        unsigned char c = (unsigned char)*src;
-        if      (c == '"')  { dst[n++] = '\\'; dst[n++] = '"';  }
-        else if (c == '\\') { dst[n++] = '\\'; dst[n++] = '\\'; }
-        else if (c == '\n') { dst[n++] = '\\'; dst[n++] = 'n';  }
-        else if (c == '\r') { dst[n++] = '\\'; dst[n++] = 'r';  }
-        else if (c == '\t') { dst[n++] = '\\'; dst[n++] = 't';  }
-        else if (c < 0x20)  { n += snprintf(dst + n, cap - n, "\\u%04X", c); }
-        else                { dst[n++] = (char)c; }
-    }
-    dst[n] = '\0';
-    return n;
-}
-
-/* Build {"cmd":"console","payload":"<escaped msg>"} into buf. */
-static size_t build_console_json(char *buf, size_t cap, const char *msg)
-{
-    size_t n = 0;
-    n += snprintf(buf + n, cap - n, "{\"cmd\":\"console\",\"payload\":\"");
-    n += json_escape(buf + n, cap - n, msg);
-    n += snprintf(buf + n, cap - n, "\"}");
-    return n;
-}
 
 /* ── Embedded file handlers ──────────────────────────────────────────────── */
 
@@ -205,14 +173,17 @@ static void ws_send_history(int fd)
     char  *hist = history_snapshot(&hist_len);
     if (!hist) return;
 
-    size_t json_cap = hist_len * 6 + 64;
-    char  *json = malloc(json_cap);
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "cmd", "console");
+    cJSON_AddStringToObject(root, "payload", hist);
+    free(hist);
+
+    char *json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
     if (json) {
-        build_console_json(json, json_cap, hist);
         ws_queue_send(fd, json);
         free(json);
     }
-    free(hist);
 }
 
 /* ── WS broadcast / send helpers (public) ───────────────────────────────── */
@@ -238,84 +209,58 @@ void webserver_ws_send_json_to_fd(int fd, const char *json)
 
 /* ── Incoming WS message dispatch ───────────────────────────────────────── */
 
-/*
- * Minimal JSON string extractor: finds "key":"value" in json and copies
- * value into out[outlen].  Returns true on success.
- */
-static bool ws_json_get_str(const char *json, const char *key,
-                             char *out, size_t outlen)
-{
-    char pat[64];
-    snprintf(pat, sizeof(pat), "\"%s\":\"", key);
-    const char *p = strstr(json, pat);
-    if (!p) return false;
-    p += strlen(pat);
-    size_t n = 0;
-    while (*p && *p != '"' && n + 1 < outlen)
-        out[n++] = *p++;
-    out[n] = '\0';
-    return (*p == '"');
-}
-
-/*
- * Minimal JSON number extractor: finds "key":number in json.
- * Returns true on success.
- */
-static bool ws_json_get_uint32(const char *json, const char *key, uint32_t *out)
-{
-    char pat[64];
-    snprintf(pat, sizeof(pat), "\"%s\":", key);
-    const char *p = strstr(json, pat);
-    if (!p) return false;
-    p += strlen(pat);
-    while (*p == ' ') p++;
-    if (*p < '0' || *p > '9') return false;
-    char *end;
-    *out = (uint32_t)strtoul(p, &end, 10);
-    return (end > p);
-}
-
 static void ws_dispatch(const char *text)
 {
-    char cmd[32];
-    if (!ws_json_get_str(text, "cmd", cmd, sizeof(cmd))) return;
+    cJSON *root = cJSON_Parse(text);
+    if (!root) return;
+
+    const char *cmd = cJSON_GetStringValue(cJSON_GetObjectItem(root, "cmd"));
+    if (!cmd) { cJSON_Delete(root); return; }
 
     if (strcmp(cmd, "create_channel") == 0) {
-        char name[32]     = "Unnamed";
-        char proto_str[8] = "1way";
-        ws_json_get_str(text, "name",  name,      sizeof(name));
-        ws_json_get_str(text, "proto", proto_str, sizeof(proto_str));
-        cosmo_proto_t proto = (strcmp(proto_str, "2way") == 0)
+        const char *name      = cJSON_GetStringValue(cJSON_GetObjectItem(root, "name"));
+        const char *proto_str = cJSON_GetStringValue(cJSON_GetObjectItem(root, "proto"));
+        cosmo_proto_t proto = (proto_str && strcmp(proto_str, "2way") == 0)
                               ? PROTO_COSMO_2WAY : PROTO_COSMO_1WAY;
-        channel_create(name, proto);
+        channel_create(name ? name : "Unnamed", proto);
 
     } else if (strcmp(cmd, "delete_channel") == 0) {
-        uint32_t serial = 0;
-        if (!ws_json_get_uint32(text, "serial", &serial)) return;
-        channel_delete(serial);
+        cJSON *serial_j = cJSON_GetObjectItem(root, "serial");
+        if (!cJSON_IsNumber(serial_j)) { cJSON_Delete(root); return; }
+        channel_delete((uint32_t)cJSON_GetNumberValue(serial_j));
 
     } else if (strcmp(cmd, "channel_cmd") == 0) {
-        uint32_t serial = 0;
-        char     cmd_name[32] = "";
-        if (!ws_json_get_uint32(text, "serial",   &serial))           return;
-        if (!ws_json_get_str(text,    "cmd_name", cmd_name, sizeof(cmd_name))) return;
+        cJSON *serial_j = cJSON_GetObjectItem(root, "serial");
+        if (!cJSON_IsNumber(serial_j)) { cJSON_Delete(root); return; }
+        uint32_t serial = (uint32_t)cJSON_GetNumberValue(serial_j);
+
+        const char *cmd_name = cJSON_GetStringValue(cJSON_GetObjectItem(root, "cmd_name"));
+        if (!cmd_name) { cJSON_Delete(root); return; }
+
+        uint8_t extra_payload = 0;
+        cJSON *extra_j = cJSON_GetObjectItem(root, "extra_payload");
+        if (cJSON_IsNumber(extra_j))
+            extra_payload = (uint8_t)(int)cJSON_GetNumberValue(extra_j);
 
         cosmo_cmd_t cosmo_cmd;
-        if      (strcmp(cmd_name, "UP")        == 0) cosmo_cmd = COSMO_BTN_UP;
-        else if (strcmp(cmd_name, "DOWN")      == 0) cosmo_cmd = COSMO_BTN_DOWN;
-        else if (strcmp(cmd_name, "STOP")      == 0) cosmo_cmd = COSMO_BTN_STOP;
-        else if (strcmp(cmd_name, "UP_DOWN")   == 0) cosmo_cmd = COSMO_BTN_UP_DOWN;
-        else if (strcmp(cmd_name, "STOP_DOWN") == 0) cosmo_cmd = COSMO_BTN_STOP_DOWN;
-        else if (strcmp(cmd_name, "STOP_HOLD") == 0) cosmo_cmd = COSMO_BTN_STOP_HOLD;
-        else if (strcmp(cmd_name, "PROG")      == 0) cosmo_cmd = COSMO_BTN_PROG;
-        else if (strcmp(cmd_name, "STOP_UP")   == 0) cosmo_cmd = COSMO_BTN_STOP_UP;
-        else if (strcmp(cmd_name, "REQUEST_FEEDBACK")   == 0) cosmo_cmd = COSMO_BTN_REQUEST_FEEDBACK;
-        else if (strcmp(cmd_name, "NONE")   == 0) cosmo_cmd = COSMO_BTN_NONE;
+        if      (strcmp(cmd_name, "UP")               == 0) cosmo_cmd = COSMO_BTN_UP;
+        else if (strcmp(cmd_name, "DOWN")             == 0) cosmo_cmd = COSMO_BTN_DOWN;
+        else if (strcmp(cmd_name, "STOP")             == 0) cosmo_cmd = COSMO_BTN_STOP;
+        else if (strcmp(cmd_name, "UP_DOWN")          == 0) cosmo_cmd = COSMO_BTN_UP_DOWN;
+        else if (strcmp(cmd_name, "STOP_DOWN")        == 0) cosmo_cmd = COSMO_BTN_STOP_DOWN;
+        else if (strcmp(cmd_name, "STOP_HOLD")        == 0) cosmo_cmd = COSMO_BTN_STOP_HOLD;
+        else if (strcmp(cmd_name, "PROG")             == 0) cosmo_cmd = COSMO_BTN_PROG;
+        else if (strcmp(cmd_name, "STOP_UP")          == 0) cosmo_cmd = COSMO_BTN_STOP_UP;
+        else if (strcmp(cmd_name, "REQUEST_FEEDBACK") == 0) cosmo_cmd = COSMO_BTN_REQUEST_FEEDBACK;
+        else if (strcmp(cmd_name, "REQUEST_POSITION") == 0) cosmo_cmd = COSMO_BTN_REQUEST_POSITION;
+        else if (strcmp(cmd_name, "SET_POSITION")     == 0) cosmo_cmd = COSMO_BTN_SET_POSITION;
+        else if (strcmp(cmd_name, "SET_TILT")         == 0) cosmo_cmd = COSMO_BTN_SET_TILT;
+        else { cJSON_Delete(root); return; }
 
-        else return;
-
-        channel_send_cmd(serial, cosmo_cmd);
+        channel_send_cmd(serial, cosmo_cmd, extra_payload);
     }
+
+    cJSON_Delete(root);
 }
 
 /* ── WebSocket handler ───────────────────────────────────────────────────── */
@@ -402,11 +347,12 @@ void gtw_console_log(const char *fmt, ...)
 
     if (nfds == 0 || !s_server) return;
 
-    /* Build JSON once, then queue a send work item per connected client */
-    size_t json_cap = strlen(msg) * 6 + 64;
-    char  *json = malloc(json_cap);
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "cmd", "console");
+    cJSON_AddStringToObject(root, "payload", msg);
+    char *json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
     if (!json) return;
-    build_console_json(json, json_cap, msg);
 
     for (int i = 0; i < nfds; i++)
         ws_queue_send(fds[i], json);

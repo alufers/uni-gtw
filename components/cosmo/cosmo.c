@@ -151,8 +151,8 @@ esp_err_t cosmo_encode(const cosmo_packet_t *pkt, cosmo_raw_packet_t *out) {
 
 const char *cosmo_cmd_name(cosmo_cmd_t cmd) {
   switch (cmd) {
-  case COSMO_BTN_NONE:
-    return "COSMO_BTN_NONE";
+  case COSMO_BTN_REQUEST_POSITION:
+    return "COSMO_BTN_REQUEST_POSITION";
   case COSMO_BTN_STOP:
     return "COSMO_BTN_STOP";
   case COSMO_BTN_UP:
@@ -179,6 +179,8 @@ const char *cosmo_cmd_name(cosmo_cmd_t cmd) {
     return "COSMO_BTN_FEEDBACK_COMFORT";
   case COSMO_BTN_FEEDBACK_PARTIAL:
     return "COSMO_BTN_FEEDBACK_PARTIAL";
+  case COSMO_BTN_FEEDBACK_IN_MOTION:
+    return "COSMO_BTN_FEEDBACK_IN_MOTION";
   case COSMO_BTN_REQUEST_FEEDBACK:
     return "COSMO_BTN_REQUEST_FEEDBACK";
   case COSMO_BTN_TILT_INCREASE:

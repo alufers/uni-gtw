@@ -30,7 +30,7 @@ typedef enum {
 } cosmo_proto_t;
 
 typedef enum {
-    COSMO_BTN_NONE              = 0,
+    COSMO_BTN_REQUEST_POSITION  = 0,
     COSMO_BTN_STOP              = 1,
     COSMO_BTN_UP                = 2,
     COSMO_BTN_UP_DOWN           = 3,
@@ -44,6 +44,7 @@ typedef enum {
     COSMO_BTN_FEEDBACK_TOP      = 11,
     COSMO_BTN_FEEDBACK_COMFORT  = 12,
     COSMO_BTN_FEEDBACK_PARTIAL  = 13,
+    COSMO_BTN_FEEDBACK_IN_MOTION = 14,
     COSMO_BTN_REQUEST_FEEDBACK  = 16,
     COSMO_BTN_TILT_INCREASE     = 17,
     COSMO_BTN_TILT_DECREASE     = 18,

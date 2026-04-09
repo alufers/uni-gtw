@@ -111,10 +111,11 @@ static void config_load(void)
         memset(ch, 0, sizeof(*ch));
         snprintf(ch->name, sizeof(ch->name), "%s", name);
         ch->proto   = (strcmp(proto_str, "2way") == 0) ? PROTO_COSMO_2WAY : PROTO_COSMO_1WAY;
-        ch->serial  = (uint32_t)cJSON_GetNumberValue(serial_j);
+        ch->serial   = (uint32_t)cJSON_GetNumberValue(serial_j);
         ch->serial  &= ~0x1F;
-        ch->counter = (uint16_t)cJSON_GetNumberValue(counter_j);
-        ch->state   = CHANNEL_STATE_UNKNOWN;
+        ch->counter  = (uint16_t)cJSON_GetNumberValue(counter_j);
+        ch->state    = CHANNEL_STATE_UNKNOWN;
+        ch->position = -1;
     }
     s_channel_count = count;
     cJSON_Delete(root);
@@ -154,6 +155,7 @@ static const char *channel_state_name(cosmo_channel_state_t state)
     case CHANNEL_STATE_COMFORT:        return "comfort";
     case CHANNEL_STATE_PARTIALLY_OPEN: return "partially_open";
     case CHANNEL_STATE_OBSTRUCTION:    return "obstruction";
+    case CHANNEL_STATE_IN_MOTION:      return "in_motion";
     default:                           return "unknown";
     }
 }
@@ -181,12 +183,18 @@ static size_t channel_to_json(const cosmo_channel_t *ch, char *buf, size_t cap)
     const char *proto_str = (ch->proto == PROTO_COSMO_2WAY) ? "2way" : "1way";
     char name_esc[128];
     ch_json_escape(name_esc, sizeof(name_esc), ch->name);
-    return (size_t)snprintf(buf, cap,
+    size_t n = (size_t)snprintf(buf, cap,
         "{\"serial\":%u,\"name\":\"%s\",\"proto\":\"%s\",\"counter\":%u"
-        ",\"state\":\"%s\",\"rssi\":%d,\"last_seen_ts\":%lld}",
+        ",\"state\":\"%s\",\"rssi\":%d,\"last_seen_ts\":%lld",
         (unsigned)ch->serial, name_esc, proto_str,
         (unsigned)ch->counter, channel_state_name(ch->state),
         (int)ch->rssi, (long long)ch->last_seen_ts);
+    if (ch->proto == PROTO_COSMO_2WAY && ch->position >= 0)
+        n += (size_t)snprintf(buf + n, cap - n, ",\"position\":%d", (int)ch->position);
+    else
+        n += (size_t)snprintf(buf + n, cap - n, ",\"position\":null");
+    n += (size_t)snprintf(buf + n, cap - n, "}");
+    return n;
 }
 
 /* ── Internal helpers ────────────────────────────────────────────────────── */
@@ -220,6 +228,7 @@ static cosmo_channel_state_t rx_feedback_state(cosmo_cmd_t cmd, cosmo_channel_st
     case COSMO_BTN_FEEDBACK_COMFORT:         return CHANNEL_STATE_COMFORT;
     case COSMO_BTN_FEEDBACK_PARTIAL:         return CHANNEL_STATE_PARTIALLY_OPEN;
     case COSMO_BTN_FEEDBACK_OBSTRUCTION:     return CHANNEL_STATE_OBSTRUCTION;
+    case COSMO_BTN_FEEDBACK_IN_MOTION:       return CHANNEL_STATE_IN_MOTION;
     default:                                 return current;
     }
 }
@@ -268,10 +277,11 @@ esp_err_t channel_create(const char *name, cosmo_proto_t proto)
     cosmo_channel_t *ch = &s_channels[s_channel_count++];
     memset(ch, 0, sizeof(*ch));
     snprintf(ch->name, sizeof(ch->name), "%s", name ? name : "Unnamed");
-    ch->proto   = proto;
-    ch->serial  = serial;
-    ch->counter = 0;
-    ch->state   = CHANNEL_STATE_UNKNOWN;
+    ch->proto    = proto;
+    ch->serial   = serial;
+    ch->counter  = 0;
+    ch->state    = CHANNEL_STATE_UNKNOWN;
+    ch->position = -1;
 
     cosmo_channel_t copy = *ch;
     channel_mark_dirty();
@@ -325,6 +335,11 @@ void channel_update_from_packet(const cosmo_packet_t *pkt)
     ch->rssi         = pkt->rssi;
     ch->last_seen_ts = (int64_t)time(NULL);
 
+    if (pkt->cmd == COSMO_BTN_FEEDBACK_PARTIAL)
+        ch->position = (int16_t)pkt->extra_payload;
+    else if (pkt->cmd == COSMO_BTN_FEEDBACK_TOP || pkt->cmd == COSMO_BTN_FEEDBACK_BOTTOM)
+        ch->position = -1;
+
     cosmo_channel_t copy = *ch;
     xSemaphoreGive(s_mutex);
 
@@ -333,7 +348,7 @@ void channel_update_from_packet(const cosmo_packet_t *pkt)
     (void)state_changed;
 }
 
-esp_err_t channel_send_cmd(uint32_t serial, cosmo_cmd_t cmd)
+esp_err_t channel_send_cmd(uint32_t serial, cosmo_cmd_t cmd, uint8_t extra_payload)
 {
     xSemaphoreTake(s_mutex, portMAX_DELAY);
     cosmo_channel_t *ch = channel_find_locked(serial);
@@ -350,11 +365,12 @@ esp_err_t channel_send_cmd(uint32_t serial, cosmo_cmd_t cmd)
     xSemaphoreGive(s_mutex);
 
     cosmo_packet_t pkt = {
-        .proto   = copy.proto,
-        .cmd     = cmd,
-        .serial  = copy.serial,
-        .counter = copy.counter,
-        .repeat  = 3,
+        .proto         = copy.proto,
+        .cmd           = cmd,
+        .serial        = copy.serial,
+        .counter       = copy.counter,
+        .repeat        = 3,
+        .extra_payload = extra_payload,
     };
     radio_request_tx(&pkt);
     broadcast_channel_update(&copy);
