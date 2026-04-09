@@ -12,6 +12,7 @@ dependencies:
     version: 6.0.0
 direct_dependencies:
 - espressif/json_generator
-manifest_hash: 62fe124b5142ff051b8c54ea2b06c323fa78438d21e5bb3baabc4b2d658a0a2f
+- idf
+manifest_hash: b75196c63932b8792cace4223cf221ec80482aa4b78d6230128f19b24449c53b
 target: esp32
 version: 3.0.0
