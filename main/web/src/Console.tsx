@@ -1,29 +1,11 @@
-import { useEffect, useRef, useState } from "preact/hooks";
+import { useEffect, useRef } from "preact/hooks";
 
-export function Console() {
-  const [lines, setLines] = useState<string[]>([]);
+interface ConsoleProps {
+  lines: string[];
+}
+
+export function Console({ lines }: ConsoleProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const ws = new WebSocket(`ws://${location.host}/ws`);
-
-    ws.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data);
-        if (msg.cmd === "console") {
-          setLines((prev) => [...prev, msg.payload]);
-        }
-      } catch (e) {
-        console.log("error handling WS message", e);
-      }
-    };
-
-    ws.onclose = () => {
-      setLines((prev) => [...prev, "[disconnected]"]);
-    };
-
-    return () => ws.close();
-  }, []);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });

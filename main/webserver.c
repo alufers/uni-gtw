@@ -1,4 +1,5 @@
 #include "webserver.h"
+#include "channel.h"
 
 #include <string.h>
 #include <stdarg.h>
@@ -213,6 +214,96 @@ static void ws_send_history(int fd)
     free(hist);
 }
 
+/* ── WS broadcast / send helpers (public) ───────────────────────────────── */
+
+void webserver_ws_broadcast_json(const char *json)
+{
+    if (!s_server) return;
+    xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
+    int fds[MAX_WS_CLIENTS];
+    int nfds = 0;
+    for (int i = 0; i < MAX_WS_CLIENTS; i++)
+        if (s_ws_fds[i] != -1) fds[nfds++] = s_ws_fds[i];
+    xSemaphoreGive(s_ws_mutex);
+
+    for (int i = 0; i < nfds; i++)
+        ws_queue_send(fds[i], json);
+}
+
+void webserver_ws_send_json_to_fd(int fd, const char *json)
+{
+    ws_queue_send(fd, json);
+}
+
+/* ── Incoming WS message dispatch ───────────────────────────────────────── */
+
+/*
+ * Minimal JSON string extractor: finds "key":"value" in json and copies
+ * value into out[outlen].  Returns true on success.
+ */
+static bool ws_json_get_str(const char *json, const char *key,
+                             char *out, size_t outlen)
+{
+    char pat[64];
+    snprintf(pat, sizeof(pat), "\"%s\":\"", key);
+    const char *p = strstr(json, pat);
+    if (!p) return false;
+    p += strlen(pat);
+    size_t n = 0;
+    while (*p && *p != '"' && n + 1 < outlen)
+        out[n++] = *p++;
+    out[n] = '\0';
+    return (*p == '"');
+}
+
+/*
+ * Minimal JSON number extractor: finds "key":number in json.
+ * Returns true on success.
+ */
+static bool ws_json_get_uint32(const char *json, const char *key, uint32_t *out)
+{
+    char pat[64];
+    snprintf(pat, sizeof(pat), "\"%s\":", key);
+    const char *p = strstr(json, pat);
+    if (!p) return false;
+    p += strlen(pat);
+    while (*p == ' ') p++;
+    if (*p < '0' || *p > '9') return false;
+    char *end;
+    *out = (uint32_t)strtoul(p, &end, 10);
+    return (end > p);
+}
+
+static void ws_dispatch(const char *text)
+{
+    char cmd[32];
+    if (!ws_json_get_str(text, "cmd", cmd, sizeof(cmd))) return;
+
+    if (strcmp(cmd, "create_channel") == 0) {
+        char name[32]     = "Unnamed";
+        char proto_str[8] = "1way";
+        ws_json_get_str(text, "name",  name,      sizeof(name));
+        ws_json_get_str(text, "proto", proto_str, sizeof(proto_str));
+        cosmo_proto_t proto = (strcmp(proto_str, "2way") == 0)
+                              ? PROTO_COSMO_2WAY : PROTO_COSMO_1WAY;
+        channel_create(name, proto);
+
+    } else if (strcmp(cmd, "channel_cmd") == 0) {
+        uint32_t serial = 0;
+        char     cmd_name[16] = "";
+        if (!ws_json_get_uint32(text, "serial",   &serial))           return;
+        if (!ws_json_get_str(text,    "cmd_name", cmd_name, sizeof(cmd_name))) return;
+
+        cosmo_cmd_t cosmo_cmd;
+        if      (strcmp(cmd_name, "UP")   == 0) cosmo_cmd = COSMO_BTN_UP;
+        else if (strcmp(cmd_name, "DOWN") == 0) cosmo_cmd = COSMO_BTN_DOWN;
+        else if (strcmp(cmd_name, "STOP") == 0) cosmo_cmd = COSMO_BTN_STOP;
+        else return;
+
+        channel_send_cmd(serial, cosmo_cmd);
+    }
+}
+
 /* ── WebSocket handler ───────────────────────────────────────────────────── */
 
 static esp_err_t ws_handler(httpd_req_t *req)
@@ -237,8 +328,9 @@ static esp_err_t ws_handler(httpd_req_t *req)
         }
         ESP_LOGI(TAG, "WS client connected fd=%d", fd);
 
-        /* Queue history replay to this client */
+        /* Send console history then current channel state */
         ws_send_history(fd);
+        channel_send_all(fd);
         return ESP_OK;
     }
 
@@ -246,15 +338,21 @@ static esp_err_t ws_handler(httpd_req_t *req)
     esp_err_t ret = httpd_ws_recv_frame(req, &frame, 0);
     if (ret != ESP_OK) return ret;
 
+    uint8_t *buf = NULL;
     if (frame.len > 0) {
-        uint8_t *buf = calloc(1, frame.len + 1);
+        buf = calloc(1, frame.len + 1);
         if (!buf) return ESP_ERR_NO_MEM;
         frame.payload = buf;
         ret = httpd_ws_recv_frame(req, &frame, frame.len);
-        free(buf);
+        if (ret != ESP_OK) {
+            free(buf);
+            return ret;
+        }
     }
 
-    if (frame.type == HTTPD_WS_TYPE_CLOSE) {
+    if (frame.type == HTTPD_WS_TYPE_TEXT && buf) {
+        ws_dispatch((char *)buf);
+    } else if (frame.type == HTTPD_WS_TYPE_CLOSE) {
         int fd = httpd_req_to_sockfd(req);
         xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
         ws_remove_fd_locked(fd);
@@ -262,6 +360,7 @@ static esp_err_t ws_handler(httpd_req_t *req)
         ESP_LOGI(TAG, "WS client disconnected fd=%d", fd);
     }
 
+    free(buf);
     return ret;
 }
 

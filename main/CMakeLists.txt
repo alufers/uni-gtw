@@ -7,6 +7,7 @@ idf_component_register(
         "webserver.c"
         "cc1101.c"
         "radio.c"
+        "channel.c"
     INCLUDE_DIRS "."
     REQUIRES
         esp_wifi
@@ -16,6 +17,7 @@ idf_component_register(
         esp_netif
         esp_driver_spi
         esp_driver_gpio
+        esp_hw_support
         cosmo
     EMBED_FILES
         ${WEB_DIST_DIR}/index.html

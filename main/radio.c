@@ -2,6 +2,7 @@
 #include "cc1101.h"
 #include "cosmo.h"
 #include "webserver.h"
+#include "channel.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -77,6 +78,7 @@ static void radio_handle_rx(void)
         char pkt_str[256];
         cosmo_packet_to_str(&pkt, pkt_str, sizeof(pkt_str));
         gtw_console_log("PKT %s", pkt_str);
+        channel_update_from_packet(&pkt);
     } else {
         /* Log raw hex for undecodable packets */
         char hex[COSMO_RAW_PACKET_LEN * 3 + 1];

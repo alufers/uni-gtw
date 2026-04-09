@@ -13,6 +13,7 @@
 
 #include "webserver.h"
 #include "radio.h"
+#include "channel.h"
 
 static const char *TAG = "uni-gtw";
 
@@ -74,6 +75,7 @@ void app_main(void)
     ESP_ERROR_CHECK(ret);
 
     webserver_early_init();
+    channel_init();
     wifi_init();
     radio_init();
 }
