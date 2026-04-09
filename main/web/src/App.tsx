@@ -1,74 +1,70 @@
-import { useEffect, useRef, useState } from "preact/hooks";
+import { useEffect, useState } from "preact/hooks";
 import { Console } from "./Console";
 import { Channels, Channel } from "./Channels";
+import { useJsonWebsocket, ReadyState } from "./useWebsocket";
+
+type WsMessage =
+  | { cmd: "console"; payload: string }
+  | { cmd: "channels"; payload: Channel[] }
+  | { cmd: "channel_update"; payload: Channel }
+  | { cmd: "channel_deleted"; payload: { serial: number } };
 
 export function App() {
   const [lines, setLines] = useState<string[]>([]);
   const [channels, setChannels] = useState<Channel[]>([]);
-  const wsRef = useRef<WebSocket | null>(null);
+
+  const { lastJsonMessage, sendJsonMessage, readyState } =
+    useJsonWebsocket<WsMessage>(`ws://${location.host}/ws`);
 
   useEffect(() => {
-    const ws = new WebSocket(`ws://${location.host}/ws`);
-    wsRef.current = ws;
-
-    ws.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data as string);
-        if (msg.cmd === "console") {
-          setLines((prev) => [...prev, msg.payload as string]);
-        } else if (msg.cmd === "channels") {
-          setChannels(msg.payload as Channel[]);
-        } else if (msg.cmd === "channel_update") {
-          const updated = msg.payload as Channel;
-          setChannels((prev) => {
-            const idx = prev.findIndex((c) => c.serial === updated.serial);
-            if (idx >= 0) {
-              const next = [...prev];
-              next[idx] = updated;
-              return next;
-            }
-            return [...prev, updated];
-          });
+    if (!lastJsonMessage) return;
+    if (lastJsonMessage.cmd === "console") {
+      setLines((prev) => [...prev, lastJsonMessage.payload]);
+    } else if (lastJsonMessage.cmd === "channels") {
+      setChannels(lastJsonMessage.payload);
+    } else if (lastJsonMessage.cmd === "channel_update") {
+      const updated = lastJsonMessage.payload;
+      setChannels((prev) => {
+        const idx = prev.findIndex((c) => c.serial === updated.serial);
+        if (idx >= 0) {
+          const next = [...prev];
+          next[idx] = updated;
+          return next;
         }
-      } catch (e) {
-        console.log("error handling WS message", e);
-      }
-    };
+        return [...prev, updated];
+      });
+    } else if (lastJsonMessage.cmd === "channel_deleted") {
+      const { serial } = lastJsonMessage.payload;
+      setChannels((prev) => prev.filter((c) => c.serial !== serial));
+    }
+  }, [lastJsonMessage]);
 
-    ws.onclose = () => {
+  useEffect(() => {
+    if (readyState === ReadyState.CLOSED) {
       setLines((prev) => [...prev, "[disconnected]"]);
-    };
+    }
+  }, [readyState]);
 
-    return () => ws.close();
-  }, []);
-
-  const sendWsMessage = (msg: object) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN)
-      wsRef.current.send(JSON.stringify(msg));
-  };
+  const connected = readyState === ReadyState.OPEN;
 
   return (
-    <div
-      style={{
-        display: "flex",
-        height: "100vh",
-        background: "#111",
-        color: "#eee",
-        fontFamily: "monospace",
-      }}
-    >
-      <div
-        style={{
-          width: "320px",
-          minWidth: "220px",
-          borderRight: "1px solid #333",
-          overflowY: "auto",
-        }}
-      >
-        <Channels channels={channels} onSend={sendWsMessage} />
+    <div class="flex flex-col h-full bg-zinc-950 text-zinc-100 font-mono">
+      {/* Top bar */}
+      <div class="flex items-center px-3 py-1 border-b border-zinc-800 text-xs shrink-0 gap-2">
+        <span class="flex-1 font-bold tracking-wide">uni-gtw</span>
+        <span class={`w-2 h-2 rounded-full ${connected ? "bg-green-500" : "bg-red-500"}`} />
+        <span class={connected ? "text-green-400" : "text-red-400"}>
+          {connected ? "Connected" : "Disconnected"}
+        </span>
       </div>
-      <div style={{ flex: 1, overflow: "hidden" }}>
-        <Console lines={lines} />
+      {/* Main content */}
+      <div class="flex flex-1 overflow-hidden">
+        <div class="w-80 min-w-52 border-r border-zinc-800 overflow-y-auto">
+          <Channels channels={channels} onSend={sendJsonMessage} />
+        </div>
+        <div class="flex-1 overflow-hidden">
+          <Console lines={lines} />
+        </div>
       </div>
     </div>
   );

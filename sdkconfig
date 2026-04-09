@@ -3267,6 +3267,15 @@ CONFIG_LITTLEFS_ASSERTS=y
 # default:
 # CONFIG_LITTLEFS_WDT_RESET is not set
 # end of LittleFS
+
+#
+# cJSON
+#
+# default:
+CONFIG_CJSON_NESTING_LIMIT=1000
+# default:
+CONFIG_CJSON_CIRCULAR_LIMIT=10000
+# end of cJSON
 # end of Component config
 
 # default:

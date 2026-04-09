@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "cosmo/cosmo.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -288,16 +289,29 @@ static void ws_dispatch(const char *text)
                               ? PROTO_COSMO_2WAY : PROTO_COSMO_1WAY;
         channel_create(name, proto);
 
+    } else if (strcmp(cmd, "delete_channel") == 0) {
+        uint32_t serial = 0;
+        if (!ws_json_get_uint32(text, "serial", &serial)) return;
+        channel_delete(serial);
+
     } else if (strcmp(cmd, "channel_cmd") == 0) {
         uint32_t serial = 0;
-        char     cmd_name[16] = "";
+        char     cmd_name[32] = "";
         if (!ws_json_get_uint32(text, "serial",   &serial))           return;
         if (!ws_json_get_str(text,    "cmd_name", cmd_name, sizeof(cmd_name))) return;
 
         cosmo_cmd_t cosmo_cmd;
-        if      (strcmp(cmd_name, "UP")   == 0) cosmo_cmd = COSMO_BTN_UP;
-        else if (strcmp(cmd_name, "DOWN") == 0) cosmo_cmd = COSMO_BTN_DOWN;
-        else if (strcmp(cmd_name, "STOP") == 0) cosmo_cmd = COSMO_BTN_STOP;
+        if      (strcmp(cmd_name, "UP")        == 0) cosmo_cmd = COSMO_BTN_UP;
+        else if (strcmp(cmd_name, "DOWN")      == 0) cosmo_cmd = COSMO_BTN_DOWN;
+        else if (strcmp(cmd_name, "STOP")      == 0) cosmo_cmd = COSMO_BTN_STOP;
+        else if (strcmp(cmd_name, "UP_DOWN")   == 0) cosmo_cmd = COSMO_BTN_UP_DOWN;
+        else if (strcmp(cmd_name, "STOP_DOWN") == 0) cosmo_cmd = COSMO_BTN_STOP_DOWN;
+        else if (strcmp(cmd_name, "STOP_HOLD") == 0) cosmo_cmd = COSMO_BTN_STOP_HOLD;
+        else if (strcmp(cmd_name, "PROG")      == 0) cosmo_cmd = COSMO_BTN_PROG;
+        else if (strcmp(cmd_name, "STOP_UP")   == 0) cosmo_cmd = COSMO_BTN_STOP_UP;
+        else if (strcmp(cmd_name, "REQUEST_FEEDBACK")   == 0) cosmo_cmd = COSMO_BTN_REQUEST_FEEDBACK;
+        else if (strcmp(cmd_name, "NONE")   == 0) cosmo_cmd = COSMO_BTN_NONE;
+
         else return;
 
         channel_send_cmd(serial, cosmo_cmd);

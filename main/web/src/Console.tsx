@@ -12,35 +12,11 @@ export function Console({ lines }: ConsoleProps) {
   }, [lines]);
 
   return (
-    <div
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        height: "100%",
-        padding: "8px",
-      }}
-    >
-      <div
-        style={{
-          borderBottom: "1px solid #444",
-          paddingBottom: "4px",
-          marginBottom: "8px",
-          color: "#888",
-          fontSize: "12px",
-        }}
-      >
+    <div class="flex flex-col h-full p-2">
+      <div class="border-b border-zinc-800 pb-1 mb-2 text-zinc-500 text-xs">
         Console
       </div>
-      <pre
-        style={{
-          flex: 1,
-          overflow: "auto",
-          fontSize: "13px",
-          lineHeight: "1.5",
-          whiteSpace: "pre-wrap",
-          wordBreak: "break-all",
-        }}
-      >
+      <pre class="flex-1 overflow-auto text-sm leading-relaxed whitespace-pre-wrap break-all">
         {lines.map((line, i) => (
           <div key={i}>{line}</div>
         ))}

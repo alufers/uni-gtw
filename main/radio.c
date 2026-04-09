@@ -42,6 +42,21 @@ static void IRAM_ATTR gdo0_isr(void *arg)
     portYIELD_FROM_ISR(woken);
 }
 
+/* ── Binary dump helper ──────────────────────────────────────────────────── */
+
+/* Writes `len` bytes as space-separated 8-bit binary strings into `out`.
+ * `out` must be at least len*9 bytes (8 bits + space per byte, no trailing space). */
+static void bytes_to_bin(const uint8_t *data, int len, char *out)
+{
+    int n = 0;
+    for (int i = 0; i < len; i++) {
+        if (i > 0) out[n++] = ' ';
+        for (int b = 7; b >= 0; b--)
+            out[n++] = ((data[i] >> b) & 1) ? '1' : '0';
+    }
+    out[n] = '\0';
+}
+
 /* ── RX handling ─────────────────────────────────────────────────────────── */
 
 static void radio_handle_rx(void)
@@ -53,6 +68,7 @@ static void radio_handle_rx(void)
         ESP_LOGW(TAG, "RX FIFO issue (RXBYTES=0x%02X), flushing", rxbytes);
         cc1101_enter_idle();
         cc1101_flush_rx();
+           cc1101_set_channel(1);
         cc1101_enter_rx();
         return;
     }
@@ -60,6 +76,12 @@ static void radio_handle_rx(void)
     uint8_t buf[COSMO_RAW_PACKET_LEN + COSMO_STATUS_BYTES];
     cc1101_read_rxfifo(buf, sizeof(buf));
 
+    /* Read FREQEST before re-entering RX (register is valid until next RX) */
+    int8_t  freqest     = cc1101_get_freqest();
+    /* freq_offset_kHz = FREQEST × (26000 kHz / 2^14) */
+    int16_t freq_off_khz = (int16_t)(((int32_t)freqest * 26000) / 16384);
+
+       cc1101_set_channel(1);
     /* Re-enter RX immediately to minimise gap */
     cc1101_enter_rx();
 
@@ -73,19 +95,18 @@ static void radio_handle_rx(void)
     memcpy(raw.data, buf, COSMO_RAW_PACKET_LEN);
     raw.rssi = rssi_dbm;
 
+    char bin[COSMO_RAW_PACKET_LEN * 9];
+    bytes_to_bin(raw.data, COSMO_RAW_PACKET_LEN, bin);
+    gtw_console_log("RX BIN: %s", bin);
+
     cosmo_packet_t pkt;
     if (cosmo_decode(&raw, &pkt) == ESP_OK) {
         char pkt_str[256];
         cosmo_packet_to_str(&pkt, pkt_str, sizeof(pkt_str));
-        gtw_console_log("PKT %s", pkt_str);
+        gtw_console_log("PKT %s freq_off=%+d kHz", pkt_str, (int)freq_off_khz);
         channel_update_from_packet(&pkt);
     } else {
-        /* Log raw hex for undecodable packets */
-        char hex[COSMO_RAW_PACKET_LEN * 3 + 1];
-        for (int i = 0; i < COSMO_RAW_PACKET_LEN; i++)
-            snprintf(hex + i * 3, 4, "%02X ", raw.data[i]);
-        hex[COSMO_RAW_PACKET_LEN * 3 - 1] = '\0';
-        gtw_console_log("RADIO: bad pkt %s rssi=%d dBm", hex, (int)rssi_dbm);
+        gtw_console_log("RADIO: bad pkt  rssi=%d dBm", (int)rssi_dbm);
     }
 }
 
@@ -95,17 +116,22 @@ static void radio_do_tx(const cosmo_packet_t *pkt)
 {
     int total = 1 + (int)pkt->repeat;
 
-    /* Go idle and flush before first TX */
+    /* Go idle and flush before first TX; set channel (1-way=ch0, 2-way=ch1) */
     cc1101_enter_idle();
     cc1101_flush_tx();
     cc1101_flush_rx();  /* discard any noise that arrived during prep */
+    cc1101_set_channel(pkt->proto == PROTO_COSMO_2WAY ? 1 : 0);
 
     for (int i = 0; i < total; i++) {
         if (i > 0)
-            vTaskDelay(pdMS_TO_TICKS(50));
+            vTaskDelay(pdMS_TO_TICKS(400));
 
         cosmo_raw_packet_t raw;
         cosmo_encode(pkt, &raw);
+
+        char bin[COSMO_RAW_PACKET_LEN * 9];
+        bytes_to_bin(raw.data, COSMO_RAW_PACKET_LEN, bin);
+        gtw_console_log("TX BIN [%d/%d]: %s", i + 1, total, bin);
 
         cc1101_enter_idle();
         cc1101_flush_tx();
@@ -120,7 +146,9 @@ static void radio_do_tx(const cosmo_packet_t *pkt)
         }
     }
 
-    /* Return to RX; flush in case of any residual noise */
+
+    cc1101_enter_idle();
+    cc1101_set_channel(1);
     cc1101_flush_rx();
     cc1101_enter_rx();
 

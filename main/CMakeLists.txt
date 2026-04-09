@@ -20,6 +20,7 @@ idf_component_register(
         esp_hw_support
         cosmo
         esp_littlefs
+        lwip
     EMBED_FILES
         ${WEB_DIST_DIR}/index.html
         ${WEB_DIST_DIR}/app.js

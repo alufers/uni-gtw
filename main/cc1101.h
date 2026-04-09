@@ -22,6 +22,10 @@ void cc1101_flush_tx(void);
 /* ── Status ──────────────────────────────────────────────────────────────── */
 uint8_t cc1101_get_rxbytes(void);
 uint8_t cc1101_get_marcstate(void);
+int8_t  cc1101_get_freqest(void);  /* FREQEST (0x32): signed freq offset raw value */
+
+/* ── Channel ─────────────────────────────────────────────────────────────── */
+void cc1101_set_channel(uint8_t channel); /* write CHANNR register; must be in IDLE */
 
 /* ── FIFO access ─────────────────────────────────────────────────────────── */
 void cc1101_read_rxfifo(uint8_t *buf, uint8_t len);

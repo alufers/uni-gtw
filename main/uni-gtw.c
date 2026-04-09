@@ -13,6 +13,7 @@
 
 #include "channel.h"
 #include "esp_littlefs.h"
+#include "esp_netif_sntp.h"
 #include "radio.h"
 #include "webserver.h"
 
@@ -34,6 +35,10 @@ static void event_handler(void *arg, esp_event_base_t event_base,
     ESP_LOGI(TAG, "Got IP: " IPSTR, IP2STR(&event->ip_info.ip));
     webserver_start();
     gtw_console_log("uni-gtw ready. IP: " IPSTR, IP2STR(&event->ip_info.ip));
+
+    esp_sntp_config_t sntp_cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
+    esp_netif_sntp_init(&sntp_cfg);
+    ESP_LOGI(TAG, "SNTP initialized");
   }
 }
 

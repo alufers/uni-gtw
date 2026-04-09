@@ -37,9 +37,13 @@ static spi_device_handle_t s_spi;
 #define CC1101_PKTCTRL0 0x08
 #define CC1101_ADDR     0x09
 #define CC1101_FSCTRL1  0x0B
+#define CC1101_FSCTRL0  0x0C
 #define CC1101_MDMCFG4  0x10
 #define CC1101_MDMCFG3  0x11
 #define CC1101_MDMCFG2  0x12
+#define CC1101_MDMCFG1  0x13
+#define CC1101_MDMCFG0	0x14
+
 #define CC1101_DEVIATN  0x15
 #define CC1101_MCSM0    0x18
 #define CC1101_FOCCFG   0x19
@@ -55,11 +59,19 @@ static spi_device_handle_t s_spi;
 #define CC1101_TXFIFO   0x3F
 #define CC1101_RXFIFO   0x3F
 
+#define CC1101_CHANNR	0x0A
+
 #define CC1101_PARTNUM   0x30
 #define CC1101_VERSION   0x31
+#define CC1101_FREQEST   0x32  /* Frequency offset estimate (2's complement, FXTAL/2^14 resolution) */
 #define CC1101_MARCSTATE 0x35
 #define CC1101_RXBYTES   0x3B
 #define CC1101_TXBYTES   0x3A
+
+#define CC1101_FSCAL3				0x23	// Frequency Synthesizer Calibration
+#define CC1101_FSCAL2				0x24	// Frequency Synthesizer Calibration
+#define CC1101_FSCAL1				0x25	// Frequency Synthesizer Calibration
+#define CC1101_FSCAL0				0x26	// Frequency Synthesizer Calibration
 
 /* SPI access bits */
 #define WRITE_BURST  0x40
@@ -87,6 +99,8 @@ static const uint8_t cc1101_regs[] = {
     CC1101_MDMCFG3,  0x83,
     CC1101_MDMCFG4,  0x56,
     CC1101_MDMCFG2,  0x02,
+    CC1101_MDMCFG1,  0x22, // Preamble: 4 bytes
+    CC1101_MDMCFG0,  0xF8, // Channel spacing: 199.951 kHz
     CC1101_DEVIATN,  0x50,
     CC1101_MCSM0,    0x18,
     CC1101_FOCCFG,   0x16,
@@ -94,9 +108,24 @@ static const uint8_t cc1101_regs[] = {
     CC1101_AGCCTRL1, 0x40,
     CC1101_AGCCTRL0, 0x91,
     CC1101_WORCTRL,  0xFB,
-    CC1101_FREQ2,    0x21,  /* Base frequency: 868.199890 MHz */
-    CC1101_FREQ1,    0x64,
-    CC1101_FREQ0,    0x6E,
+
+        CC1101_FREQ2,
+        0x21, // Base frequency: 868.000336 MHz
+        CC1101_FREQ1,
+        0x62,
+        CC1101_FREQ0,
+        0x77,
+
+        CC1101_FSCTRL0, 0x2c, // offset by 70khz
+
+
+
+        CC1101_FSCAL3,      0xE9,
+        CC1101_FSCAL2,      0x2A,
+        CC1101_FSCAL1,      0x00,
+        CC1101_FSCAL0,      0x1F,
+
+
     0, 0,  /* terminator */
 };
 
@@ -174,12 +203,14 @@ static void cc1101_strobe(uint8_t cmd)
 
 void cc1101_enter_idle(void)  { cc1101_strobe(CC1101_SIDLE); }
 void cc1101_enter_rx(void)    { cc1101_strobe(CC1101_SRX);   }
+void cc1101_set_channel(uint8_t channel) { cc1101_write_reg(CC1101_CHANNR, channel); }
 void cc1101_start_tx(void)    { cc1101_strobe(CC1101_STX);   }
 void cc1101_flush_rx(void)    { cc1101_strobe(CC1101_SFRX);  }
 void cc1101_flush_tx(void)    { cc1101_strobe(CC1101_SFTX);  }
 
 uint8_t cc1101_get_rxbytes(void)   { return cc1101_read_status(CC1101_RXBYTES);   }
 uint8_t cc1101_get_marcstate(void) { return cc1101_read_status(CC1101_MARCSTATE); }
+int8_t  cc1101_get_freqest(void)   { return (int8_t)cc1101_read_status(CC1101_FREQEST); }
 
 void cc1101_read_rxfifo(uint8_t *buf, uint8_t len)
 {
