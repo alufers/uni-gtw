@@ -1,19 +1,25 @@
 #include "webserver.h"
 #include "channel.h"
+#include "wifi_manager.h"
 
 #include <string.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 
 #include "cJSON.h"
 #include "cosmo/cosmo.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "freertos/task.h"
 
 static const char *TAG = "webserver";
+
+extern bool g_radio_ok;
 
 /* ── Config ──────────────────────────────────────────────────────────────── */
 
@@ -51,7 +57,6 @@ STATIC_FILE_HANDLER(app_css,   "text/css")
 
 /* ── History buffer ──────────────────────────────────────────────────────── */
 
-/* Append bytes to the circular history buffer (caller holds s_ws_mutex). */
 static void history_append_locked(const char *str, size_t len)
 {
     for (size_t i = 0; i < len; i++) {
@@ -62,11 +67,6 @@ static void history_append_locked(const char *str, size_t len)
     }
 }
 
-/*
- * Build a heap-allocated null-terminated string with ordered history
- * content (oldest → newest).  Returns NULL if nothing stored or OOM.
- * Caller must free().  Caller must NOT hold s_ws_mutex.
- */
 static char *history_snapshot(size_t *out_len)
 {
     xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
@@ -99,21 +99,12 @@ static char *history_snapshot(size_t *out_len)
 
 /* ── WebSocket async-send helpers ────────────────────────────────────────── */
 
-/*
- * Work struct queued to the httpd task via httpd_queue_work.
- * The JSON payload is stored as a flexible array member to avoid
- * an extra allocation per send.
- */
 typedef struct {
     httpd_handle_t hd;
     int            fd;
-    char           json[]; /* NUL-terminated JSON payload */
+    char           json[];
 } ws_send_work_t;
 
-/*
- * Runs in the httpd task context.  Sends the frame and frees memory.
- * On error, triggers session close so ws_handler can clean up the fd.
- */
 static void ws_send_work(void *arg)
 {
     ws_send_work_t *w = arg;
@@ -127,21 +118,15 @@ static void ws_send_work(void *arg)
     esp_err_t err = httpd_ws_send_frame_async(w->hd, w->fd, &pkt);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "WS send fd=%d failed (%d), closing session", w->fd, err);
-        /* Remove from client list immediately */
         xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
         for (int i = 0; i < MAX_WS_CLIENTS; i++)
             if (s_ws_fds[i] == w->fd) s_ws_fds[i] = -1;
         xSemaphoreGive(s_ws_mutex);
-        /* Let the httpd tear down the socket */
         httpd_sess_trigger_close(w->hd, w->fd);
     }
     free(w);
 }
 
-/*
- * Allocate a work item and queue it to the httpd task.
- * json must be NUL-terminated; it is copied into the work item.
- */
 static void ws_queue_send(int fd, const char *json)
 {
     if (!s_server) return;
@@ -163,10 +148,6 @@ static void ws_remove_fd_locked(int fd)
         if (s_ws_fds[i] == fd) s_ws_fds[i] = -1;
 }
 
-/*
- * Send the console history to a newly connected client.
- * Called from ws_handler (httpd task), queues additional httpd work.
- */
 static void ws_send_history(int fd)
 {
     size_t hist_len;
@@ -207,9 +188,101 @@ void webserver_ws_send_json_to_fd(int fd, const char *json)
     ws_queue_send(fd, json);
 }
 
+/* ── Status broadcast ────────────────────────────────────────────────────── */
+
+static void build_and_send_status(int fd /* -1 = broadcast */)
+{
+    wifi_mgr_mode_t mode = wifi_manager_get_mode();
+    int8_t rssi;
+    bool   has_rssi = wifi_manager_get_rssi(&rssi);
+    time_t now      = time(NULL);
+    int64_t uptime_us = esp_timer_get_time();
+    int64_t uptime_s  = uptime_us / 1000000LL;
+
+    cJSON *root    = cJSON_CreateObject();
+    cJSON *payload = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "cmd", "status");
+    cJSON_AddNumberToObject(payload, "uptime",    (double)uptime_s);
+    cJSON_AddNumberToObject(payload, "time",      (double)now);
+    cJSON_AddStringToObject(payload, "wifi_mode", (mode == WIFI_MGR_MODE_AP) ? "ap" : "sta");
+    cJSON_AddBoolToObject  (payload, "radio_ok",  g_radio_ok);
+    if (has_rssi)
+        cJSON_AddNumberToObject(payload, "wifi_rssi", rssi);
+    else
+        cJSON_AddNullToObject(payload, "wifi_rssi");
+    cJSON_AddItemToObject(root, "payload", payload);
+
+    char *json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (!json) return;
+
+    if (fd == -1)
+        webserver_ws_broadcast_json(json);
+    else
+        webserver_ws_send_json_to_fd(fd, json);
+    free(json);
+}
+
+static void status_timer_cb(void *arg)
+{
+    (void)arg;
+    build_and_send_status(-1);
+}
+
+void webserver_start_status_timer(void)
+{
+    esp_timer_handle_t t;
+    esp_timer_create_args_t args = {
+        .callback = status_timer_cb,
+        .name     = "ws_status",
+    };
+    ESP_ERROR_CHECK(esp_timer_create(&args, &t));
+    ESP_ERROR_CHECK(esp_timer_start_periodic(t, 10ULL * 1000 * 1000));
+}
+
+/* ── WiFi scan task ──────────────────────────────────────────────────────── */
+
+typedef struct {
+    int fd;
+} scan_task_arg_t;
+
+static void scan_task(void *arg)
+{
+    scan_task_arg_t *a = (scan_task_arg_t *)arg;
+    int fd = a->fd;
+    free(a);
+
+    wifi_scan_result_t results[WIFI_SCAN_MAX_APS];
+    uint16_t count = WIFI_SCAN_MAX_APS;
+    esp_err_t err  = wifi_manager_scan(results, &count);
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "cmd", "wifi_scan_result");
+    cJSON *arr = cJSON_CreateArray();
+    if (err == ESP_OK) {
+        for (uint16_t i = 0; i < count; i++) {
+            cJSON *entry = cJSON_CreateObject();
+            cJSON_AddStringToObject(entry, "ssid", results[i].ssid);
+            cJSON_AddNumberToObject(entry, "rssi", results[i].rssi);
+            cJSON_AddNumberToObject(entry, "auth", results[i].authmode);
+            cJSON_AddItemToArray(arr, entry);
+        }
+    }
+    cJSON_AddItemToObject(root, "payload", arr);
+
+    char *json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (json) {
+        webserver_ws_send_json_to_fd(fd, json);
+        free(json);
+    }
+
+    vTaskDelete(NULL);
+}
+
 /* ── Incoming WS message dispatch ───────────────────────────────────────── */
 
-static void ws_dispatch(const char *text)
+static void ws_dispatch(int fd, const char *text)
 {
     cJSON *root = cJSON_Parse(text);
     if (!root) return;
@@ -258,6 +331,19 @@ static void ws_dispatch(const char *text)
         else { cJSON_Delete(root); return; }
 
         channel_send_cmd(serial, cosmo_cmd, extra_payload);
+
+    } else if (strcmp(cmd, "wifi_scan") == 0) {
+        scan_task_arg_t *a = malloc(sizeof(*a));
+        if (a) {
+            a->fd = fd;
+            if (xTaskCreate(scan_task, "wifi_scan", 4096, a, 5, NULL) != pdPASS)
+                free(a);
+        }
+
+    } else if (strcmp(cmd, "wifi_set_credentials") == 0) {
+        const char *ssid = cJSON_GetStringValue(cJSON_GetObjectItem(root, "ssid"));
+        const char *pass = cJSON_GetStringValue(cJSON_GetObjectItem(root, "password"));
+        wifi_manager_set_credentials(ssid ? ssid : "", pass ? pass : "");
     }
 
     cJSON_Delete(root);
@@ -287,9 +373,9 @@ static esp_err_t ws_handler(httpd_req_t *req)
         }
         ESP_LOGI(TAG, "WS client connected fd=%d", fd);
 
-        /* Send console history then current channel state */
         ws_send_history(fd);
         channel_send_all(fd);
+        build_and_send_status(fd);
         return ESP_OK;
     }
 
@@ -310,7 +396,7 @@ static esp_err_t ws_handler(httpd_req_t *req)
     }
 
     if (frame.type == HTTPD_WS_TYPE_TEXT && buf) {
-        ws_dispatch((char *)buf);
+        ws_dispatch(httpd_req_to_sockfd(req), (char *)buf);
     } else if (frame.type == HTTPD_WS_TYPE_CLOSE) {
         int fd = httpd_req_to_sockfd(req);
         xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
@@ -335,7 +421,6 @@ void gtw_console_log(const char *fmt, ...)
 
     ESP_LOGI("gtw", "%s", msg);
 
-    /* Append to history and snapshot active fds under the mutex */
     xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
     history_append_locked(msg, strlen(msg));
     history_append_locked("\n", 1);
@@ -373,6 +458,8 @@ void webserver_early_init(void)
 
 void webserver_start(void)
 {
+    if (s_server) return; /* idempotent */
+
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.lru_purge_enable = true;
 

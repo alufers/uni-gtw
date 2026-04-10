@@ -1,6 +1,8 @@
 import { useState } from "preact/hooks";
+import { CircleChevronUp, CircleChevronDown, CircleStop, Plus, X } from "lucide-preact";
 import { Button } from "./Button";
 import { Collapsible } from "./Collapsible";
+import { rssiToSignalIcon } from "./icons";
 
 export type ChannelState =
   | "unknown"
@@ -128,20 +130,24 @@ function ChannelCard({
           class="px-1 py-0 text-xs leading-4 shrink-0"
           title={confirmDelete ? "Click again to confirm" : "Delete channel"}
         >
-          {confirmDelete ? "Sure?" : "✕"}
+          <X size={12} />
         </Button>
       </div>
 
       {/* Meta */}
-      <div class="text-xs text-zinc-500 mb-2 flex gap-2 flex-wrap">
+      <div class="text-xs text-zinc-500 mb-2 flex gap-2 flex-wrap items-center">
         <span>{ch.proto}</span>
         <span>CNT: {ch.counter}</span>
         <span>0x{ch.serial.toString(16).toUpperCase().padStart(8, "0")}</span>
-        {ch.last_seen_ts > 0 && (
-          <span class="text-zinc-400">
-            {ch.rssi} dBm · {formatLastSeen(ch.last_seen_ts)}
-          </span>
-        )}
+        {ch.last_seen_ts > 0 && (() => {
+          const SignalIcon = rssiToSignalIcon(ch.rssi);
+          return (
+            <span class="text-zinc-400 flex items-center gap-1">
+              <SignalIcon size={12} />
+              {ch.rssi} dBm · {formatLastSeen(ch.last_seen_ts)}
+            </span>
+          );
+        })()}
         {ch.proto === "2way" && ch.position !== null && ch.position !== undefined && (
           <span class="text-lime-400 font-bold">{ch.position}%</span>
         )}
@@ -149,18 +155,18 @@ function ChannelCard({
 
       {/* Main controls */}
       <div class="flex gap-1 mb-1">
-        <Button variant="primary" onClick={() => sendCmd("UP")} class="flex-1">
-          ▲ Up
+        <Button variant="primary" onClick={() => sendCmd("UP")} class="flex-1 flex items-center justify-center gap-1">
+          <CircleChevronUp size={14} /> Up
         </Button>
         <Button
           variant="secondary"
           onClick={() => sendCmd("STOP")}
-          class="flex-1"
+          class="flex-1 flex items-center justify-center gap-1"
         >
-          ■ Stop
+          <CircleStop size={14} /> Stop
         </Button>
-        <Button variant="danger" onClick={() => sendCmd("DOWN")} class="flex-1">
-          ▼ Down
+        <Button variant="danger" onClick={() => sendCmd("DOWN")} class="flex-1 flex items-center justify-center gap-1">
+          <CircleChevronDown size={14} /> Down
         </Button>
       </div>
 
@@ -238,7 +244,9 @@ export function Channels({ channels, onSend }: ChannelsProps) {
       {/* Header */}
       <div class="flex items-center border-b border-zinc-800 pb-1 mb-2">
         <span class="text-zinc-500 text-xs flex-1">Channels</span>
-        <Button onClick={() => setShowForm((v) => !v)}>+ New</Button>
+        <Button onClick={() => setShowForm((v) => !v)} class="flex items-center gap-1">
+          <Plus size={12} /> New
+        </Button>
       </div>
 
       {/* New channel form */}

@@ -5,6 +5,7 @@
     "dev": "vite"
   },
   "dependencies": {
+    "lucide-preact": "^1.8.0",
     "preact": "^10.25.0"
   },
   "devDependencies": {

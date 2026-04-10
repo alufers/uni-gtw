@@ -5,6 +5,7 @@ idf_component_register(
     SRCS
         "uni-gtw.c"
         "webserver.c"
+        "wifi_manager.c"
         "cc1101.c"
         "radio.c"
         "channel.c"
@@ -18,6 +19,7 @@ idf_component_register(
         esp_driver_spi
         esp_driver_gpio
         esp_hw_support
+        esp_timer
         cosmo
         esp_littlefs
         lwip
