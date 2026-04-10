@@ -15,7 +15,7 @@
 
 static const char *TAG = "uni-gtw";
 
-bool g_radio_ok = false;
+radio_state_t g_radio_state = RADIO_STATE_NOT_CONFIGURED;
 
 void app_main(void)
 {
@@ -47,7 +47,7 @@ void app_main(void)
         return;
     }
 
-    /* Load persisted config (hostname, mqtt, channels) */
+    /* Load persisted config (hostname, mqtt, radio, channels) */
     config_init();
 
     /* Init network stack before anything that opens sockets */
@@ -76,6 +76,14 @@ void app_main(void)
     mdns_service_add(NULL, "_uni_gtw", "_tcp", 80, NULL, 0);
     ESP_LOGI(TAG, "mDNS started: %s.local", cfg.hostname);
 
-    g_radio_ok = (radio_init() == ESP_OK);
+    /* Radio init — result sets the three-state global */
+    esp_err_t radio_err = radio_init();
+    if (radio_err == ESP_ERR_NOT_SUPPORTED)
+        g_radio_state = RADIO_STATE_NOT_CONFIGURED;
+    else if (radio_err != ESP_OK)
+        g_radio_state = RADIO_STATE_ERROR;
+    else
+        g_radio_state = RADIO_STATE_OK;
+
     webserver_start_status_timer();
 }

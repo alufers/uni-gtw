@@ -18,10 +18,11 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "mdns.h"
+#include "radio.h"
 
 static const char *TAG = "webserver";
 
-extern bool g_radio_ok;
+extern radio_state_t g_radio_state;
 
 /* ── Config ──────────────────────────────────────────────────────────────── */
 
@@ -209,8 +210,12 @@ static void build_and_send_status(int fd /* -1 = broadcast */)
     cJSON_AddStringToObject(root, "cmd", "status");
     cJSON_AddNumberToObject(payload, "uptime",    (double)uptime_s);
     cJSON_AddNumberToObject(payload, "time",      (double)now);
-    cJSON_AddStringToObject(payload, "wifi_mode", (mode == WIFI_MGR_MODE_AP) ? "ap" : "sta");
-    cJSON_AddBoolToObject  (payload, "radio_ok",  g_radio_ok);
+    const char *radio_status_str =
+        (g_radio_state == RADIO_STATE_OK)             ? "ok" :
+        (g_radio_state == RADIO_STATE_ERROR)          ? "error" : "not_configured";
+
+    cJSON_AddStringToObject(payload, "wifi_mode",     (mode == WIFI_MGR_MODE_AP) ? "ap" : "sta");
+    cJSON_AddStringToObject(payload, "radio_status",  radio_status_str);
     if (has_rssi)
         cJSON_AddNumberToObject(payload, "wifi_rssi", rssi);
     else
@@ -462,14 +467,25 @@ static char *build_settings_json(void)
     config_get(&cfg);
 
     cJSON *root   = cJSON_CreateObject();
-    cJSON *mqtt_j = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "hostname", cfg.hostname);
+
+    cJSON *mqtt_j = cJSON_CreateObject();
     cJSON_AddBoolToObject  (mqtt_j, "enabled",  cfg.mqtt.enabled);
     cJSON_AddStringToObject(mqtt_j, "broker",   cfg.mqtt.broker);
     cJSON_AddNumberToObject(mqtt_j, "port",     cfg.mqtt.port);
     cJSON_AddStringToObject(mqtt_j, "username", cfg.mqtt.username);
     cJSON_AddStringToObject(mqtt_j, "password", cfg.mqtt.password);
     cJSON_AddItemToObject(root, "mqtt", mqtt_j);
+
+    cJSON *radio_j = cJSON_CreateObject();
+    cJSON_AddBoolToObject  (radio_j, "enabled",    cfg.radio.enabled);
+    cJSON_AddNumberToObject(radio_j, "gpio_miso",  cfg.radio.gpio_miso);
+    cJSON_AddNumberToObject(radio_j, "gpio_mosi",  cfg.radio.gpio_mosi);
+    cJSON_AddNumberToObject(radio_j, "gpio_sck",   cfg.radio.gpio_sck);
+    cJSON_AddNumberToObject(radio_j, "gpio_csn",   cfg.radio.gpio_csn);
+    cJSON_AddNumberToObject(radio_j, "gpio_gdo0",  cfg.radio.gpio_gdo0);
+    cJSON_AddNumberToObject(radio_j, "spi_freq_hz",cfg.radio.spi_freq_hz);
+    cJSON_AddItemToObject(root, "radio", radio_j);
 
     char *json = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
@@ -542,6 +558,30 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
         if (!password) password = current.mqtt.password;
 
         config_set_mqtt(broker, port, username, password, enabled);
+    }
+
+    /* Radio */
+    cJSON *radio_j = cJSON_GetObjectItem(root, "radio");
+    if (cJSON_IsObject(radio_j)) {
+        gateway_config_t current;
+        config_get(&current);
+
+        cJSON *en = cJSON_GetObjectItem(radio_j, "enabled");
+        bool enabled = cJSON_IsBool(en) ? cJSON_IsTrue(en) : current.radio.enabled;
+
+#define GET_INT(key, field) \
+        cJSON *_j_##field = cJSON_GetObjectItem(radio_j, key); \
+        int field = cJSON_IsNumber(_j_##field) ? (int)cJSON_GetNumberValue(_j_##field) : current.radio.field;
+        GET_INT("gpio_miso",   gpio_miso)
+        GET_INT("gpio_mosi",   gpio_mosi)
+        GET_INT("gpio_sck",    gpio_sck)
+        GET_INT("gpio_csn",    gpio_csn)
+        GET_INT("gpio_gdo0",   gpio_gdo0)
+        GET_INT("spi_freq_hz", spi_freq_hz)
+#undef GET_INT
+
+        config_set_radio(enabled, gpio_miso, gpio_mosi, gpio_sck,
+                         gpio_csn, gpio_gdo0, spi_freq_hz);
     }
 
     cJSON_Delete(root);

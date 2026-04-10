@@ -1,8 +1,9 @@
 import { useState } from "preact/hooks";
-import { CircleChevronUp, CircleChevronDown, CircleStop, Plus, X } from "lucide-preact";
+import { CircleChevronUp, CircleChevronDown, CircleStop, Plus, Settings, X } from "lucide-preact";
 import { Button } from "./Button";
 import { Collapsible } from "./Collapsible";
 import { rssiToSignalIcon } from "./icons";
+import { RadioStatus } from "./wsTypes";
 
 export type ChannelState =
   | "unknown"
@@ -29,6 +30,8 @@ export interface Channel {
 interface ChannelsProps {
   channels: Channel[];
   onSend: (msg: object) => void;
+  radioStatus: RadioStatus;
+  onGoToSettings: () => void;
 }
 
 const STATE_LABEL: Record<ChannelState, string> = {
@@ -226,7 +229,7 @@ function ChannelCard({
   );
 }
 
-export function Channels({ channels, onSend }: ChannelsProps) {
+export function Channels({ channels, onSend, radioStatus, onGoToSettings }: ChannelsProps) {
   const [showForm, setShowForm] = useState(false);
   const [newName, setNewName] = useState("");
   const [newProto, setNewProto] = useState<"1way" | "2way">("1way");
@@ -238,6 +241,22 @@ export function Channels({ channels, onSend }: ChannelsProps) {
     setNewName("");
     setShowForm(false);
   };
+
+  if (radioStatus === "not_configured") {
+    return (
+      <div class="flex flex-col h-full p-4 items-center justify-center text-center gap-3">
+        <Settings size={32} class="text-zinc-600" />
+        <p class="text-zinc-400 text-xs leading-relaxed">
+          The radio module is not configured.
+          <br />
+          Set up the GPIO pins and enable it in Settings.
+        </p>
+        <Button variant="primary" onClick={onGoToSettings} class="flex items-center gap-1.5">
+          <Settings size={12} /> Open Settings
+        </Button>
+      </div>
+    );
+  }
 
   return (
     <div class="flex flex-col h-full p-2 overflow-y-auto">

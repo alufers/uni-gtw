@@ -1,12 +1,14 @@
 import { Channel } from "./Channels";
 
+export type RadioStatus = "ok" | "error" | "not_configured";
+
 export interface StatusPayload {
   uptime: number;
   time: number;
   wifi_mode: "ap" | "sta";
   wifi_rssi: number | null;
   wifi_ssid: string | null;
-  radio_ok: boolean;
+  radio_status: RadioStatus;
 }
 
 export interface ScanEntry {

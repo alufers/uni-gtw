@@ -1,5 +1,6 @@
 #include "radio.h"
 #include "cc1101.h"
+#include "config.h"
 #include "cosmo.h"
 #include "webserver.h"
 #include "channel.h"
@@ -181,18 +182,35 @@ static void radio_task(void *arg)
 
 esp_err_t radio_init(void)
 {
+    gateway_config_t cfg;
+    config_get(&cfg);
+
+    if (!cfg.radio.enabled) {
+        ESP_LOGI(TAG, "Radio not enabled in config, skipping init");
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+
     s_radio_queue = xQueueCreate(RADIO_QUEUE_DEPTH, sizeof(radio_evt_t));
     if (!s_radio_queue) {
         ESP_LOGE(TAG, "Failed to create radio queue");
         return ESP_ERR_NO_MEM;
     }
 
-    esp_err_t err = cc1101_init();
+    cc1101_config_t cc_cfg = {
+        .gpio_miso   = cfg.radio.gpio_miso,
+        .gpio_mosi   = cfg.radio.gpio_mosi,
+        .gpio_sck    = cfg.radio.gpio_sck,
+        .gpio_csn    = cfg.radio.gpio_csn,
+        .gpio_gdo0   = cfg.radio.gpio_gdo0,
+        .spi_freq_hz = cfg.radio.spi_freq_hz,
+    };
+
+    esp_err_t err = cc1101_init(&cc_cfg);
     if (err != ESP_OK) return err;
 
     /* Install GDO0 ISR (service must be installed once per project) */
     gpio_install_isr_service(0);
-    gpio_isr_handler_add(CC1101_GDO0_GPIO, gdo0_isr, NULL);
+    gpio_isr_handler_add(cfg.radio.gpio_gdo0, gdo0_isr, NULL);
 
     xTaskCreate(radio_task, "radio", 4096, NULL, 10, NULL);
 

@@ -8,7 +8,7 @@ import { Chip, ChipButton } from "./Chip";
 import { useJsonWebsocket, ReadyState } from "./useWebsocket";
 import { WifiModal } from "./WifiModal";
 import { rssiToWifiIcon } from "./icons";
-import { WsMessage, StatusPayload, ScanEntry } from "./wsTypes";
+import { WsMessage, StatusPayload, ScanEntry, RadioStatus } from "./wsTypes";
 
 function formatUptime(seconds: number): string {
   const d = Math.floor(seconds / 86400);
@@ -24,6 +24,12 @@ const TABS = [
   { id: "control",  label: "Control"  },
   { id: "settings", label: "Settings" },
 ];
+
+const RADIO_CHIP: Record<RadioStatus, { label: string; cls: string }> = {
+  ok:             { label: "Radio OK",           cls: "text-green-400 border-green-900" },
+  error:          { label: "Radio error",        cls: "text-red-400 border-red-900"     },
+  not_configured: { label: "Radio not set up",   cls: "text-zinc-400 border-zinc-700"   },
+};
 
 export function App() {
   const [lines, setLines] = useState<string[]>([]);
@@ -74,6 +80,8 @@ export function App() {
   }, [readyState]);
 
   const connected = readyState === ReadyState.OPEN;
+  const radioStatus: RadioStatus = status?.radio_status ?? "not_configured";
+  const radioChip = RADIO_CHIP[radioStatus];
 
   const uptimeStr = status ? formatUptime(status.uptime) : null;
   const timeStr =
@@ -84,13 +92,13 @@ export function App() {
   return (
     <div class="flex flex-col h-full bg-zinc-950 text-zinc-100 font-mono">
       {/* Top bar */}
-      <div class="flex items-center px-3 py-1.5 border-b border-zinc-800 shrink-0 gap-1.5">
-        <span class="flex-1 font-bold tracking-wide text-xs">uni-gtw</span>
+      <div class="flex items-center px-3 py-2.5 border-b border-zinc-800 shrink-0 gap-2">
+        <span class="flex-1 font-bold tracking-wide text-sm">uni-gtw</span>
 
         {/* Local time */}
         {timeStr && (
           <Chip title="Local time">
-            <Clock size={11} class="shrink-0" />
+            <Clock size={13} class="shrink-0" />
             {timeStr}
           </Chip>
         )}
@@ -98,22 +106,16 @@ export function App() {
         {/* Uptime */}
         {uptimeStr && (
           <Chip title="Uptime since last boot">
-            <ClockArrowUp size={11} class="shrink-0" />
+            <ClockArrowUp size={13} class="shrink-0" />
             {uptimeStr}
           </Chip>
         )}
 
         {/* Radio */}
         {status && (
-          <Chip
-            class={
-              status.radio_ok
-                ? "text-green-400 border-green-900"
-                : "text-red-400 border-red-900"
-            }
-            title={status.radio_ok ? "Radio OK" : "Radio error"}
-          >
-            <Radio size={11} />
+          <Chip class={radioChip.cls} title={radioChip.label}>
+            <Radio size={13} class="shrink-0" />
+            {radioChip.label}
           </Chip>
         )}
 
@@ -124,7 +126,7 @@ export function App() {
             onClick={() => setShowWifiModal(true)}
             title="Running in AP mode — click to configure WiFi"
           >
-            <WifiZero size={11} />
+            <WifiZero size={13} class="shrink-0" />
             AP: UNI-GTW
           </ChipButton>
         )}
@@ -132,7 +134,7 @@ export function App() {
           const WifiIcon = rssiToWifiIcon(status.wifi_rssi);
           return (
             <Chip class="text-green-400 border-green-900">
-              <WifiIcon size={11} />
+              <WifiIcon size={13} class="shrink-0" />
               {status.wifi_ssid && <span>{status.wifi_ssid}</span>}
               <span>{status.wifi_rssi} dBm</span>
             </Chip>
@@ -141,14 +143,10 @@ export function App() {
 
         {/* WebSocket connection */}
         <Chip
-          class={
-            connected
-              ? "text-green-400 border-green-900"
-              : "text-red-400 border-red-900"
-          }
+          class={connected ? "text-green-400 border-green-900" : "text-red-400 border-red-900"}
           title={connected ? "WebSocket connected" : "WebSocket disconnected"}
         >
-          {connected ? <Plug size={11} /> : <Unplug size={11} />}
+          {connected ? <Plug size={13} class="shrink-0" /> : <Unplug size={13} class="shrink-0" />}
           {connected ? "Connected" : "Disconnected"}
         </Chip>
       </div>
@@ -160,7 +158,12 @@ export function App() {
       {activeTab === "control" ? (
         <div class="flex flex-1 overflow-hidden">
           <div class="w-80 min-w-52 border-r border-zinc-800 overflow-y-auto">
-            <Channels channels={channels} onSend={sendJsonMessage} />
+            <Channels
+              channels={channels}
+              onSend={sendJsonMessage}
+              radioStatus={radioStatus}
+              onGoToSettings={() => setActiveTab("settings")}
+            />
           </div>
           <div class="flex-1 overflow-hidden">
             <Console lines={lines} />

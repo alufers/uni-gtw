@@ -57,6 +57,16 @@ static void do_save(void)
     cJSON_AddStringToObject(mqtt_j, "password", cfg.mqtt.password);
     cJSON_AddItemToObject(root, "mqtt", mqtt_j);
 
+    cJSON *radio_j = cJSON_CreateObject();
+    cJSON_AddBoolToObject  (radio_j, "enabled",    cfg.radio.enabled);
+    cJSON_AddNumberToObject(radio_j, "gpio_miso",  cfg.radio.gpio_miso);
+    cJSON_AddNumberToObject(radio_j, "gpio_mosi",  cfg.radio.gpio_mosi);
+    cJSON_AddNumberToObject(radio_j, "gpio_sck",   cfg.radio.gpio_sck);
+    cJSON_AddNumberToObject(radio_j, "gpio_csn",   cfg.radio.gpio_csn);
+    cJSON_AddNumberToObject(radio_j, "gpio_gdo0",  cfg.radio.gpio_gdo0);
+    cJSON_AddNumberToObject(radio_j, "spi_freq_hz",cfg.radio.spi_freq_hz);
+    cJSON_AddItemToObject(root, "radio", radio_j);
+
     cJSON *arr = cJSON_CreateArray();
     for (int i = 0; i < count; i++) {
         cJSON *ch = cJSON_CreateObject();
@@ -133,6 +143,21 @@ static void do_load(void)
             snprintf(s_config.mqtt.password, sizeof(s_config.mqtt.password), "%s", pass);
     }
 
+    cJSON *radio_j = cJSON_GetObjectItem(root, "radio");
+    if (cJSON_IsObject(radio_j)) {
+        cJSON *en = cJSON_GetObjectItem(radio_j, "enabled");
+        if (cJSON_IsBool(en))
+            s_config.radio.enabled = cJSON_IsTrue(en);
+#define LOAD_INT(field, key) { cJSON *j = cJSON_GetObjectItem(radio_j, key); if (cJSON_IsNumber(j)) s_config.radio.field = (int)cJSON_GetNumberValue(j); }
+        LOAD_INT(gpio_miso,   "gpio_miso")
+        LOAD_INT(gpio_mosi,   "gpio_mosi")
+        LOAD_INT(gpio_sck,    "gpio_sck")
+        LOAD_INT(gpio_csn,    "gpio_csn")
+        LOAD_INT(gpio_gdo0,   "gpio_gdo0")
+        LOAD_INT(spi_freq_hz, "spi_freq_hz")
+#undef LOAD_INT
+    }
+
     cJSON *arr = cJSON_GetObjectItem(root, "channels");
     int count = 0;
     if (cJSON_IsArray(arr)) {
@@ -190,7 +215,14 @@ void config_init(void)
 {
     s_mutex = xSemaphoreCreateMutex();
     memset(&s_config, 0, sizeof(s_config));
-    s_config.mqtt.port = 1883;
+    s_config.mqtt.port       = 1883;
+    s_config.radio.enabled   = false;
+    s_config.radio.gpio_miso = CONFIG_RADIO_DEFAULT_MISO;
+    s_config.radio.gpio_mosi = CONFIG_RADIO_DEFAULT_MOSI;
+    s_config.radio.gpio_sck  = CONFIG_RADIO_DEFAULT_SCK;
+    s_config.radio.gpio_csn  = CONFIG_RADIO_DEFAULT_CSN;
+    s_config.radio.gpio_gdo0 = CONFIG_RADIO_DEFAULT_GDO0;
+    s_config.radio.spi_freq_hz = CONFIG_RADIO_DEFAULT_SPI_FREQ;
 
     set_default_hostname();
     do_load();
@@ -246,6 +278,23 @@ esp_err_t config_set_mqtt(const char *broker, uint16_t port,
     snprintf(s_config.mqtt.broker,   sizeof(s_config.mqtt.broker),   "%s", broker   ? broker   : "");
     snprintf(s_config.mqtt.username, sizeof(s_config.mqtt.username), "%s", username ? username : "");
     snprintf(s_config.mqtt.password, sizeof(s_config.mqtt.password), "%s", password ? password : "");
+    xSemaphoreGive(s_mutex);
+    mark_dirty();
+    return ESP_OK;
+}
+
+esp_err_t config_set_radio(bool enabled,
+                           int gpio_miso, int gpio_mosi, int gpio_sck,
+                           int gpio_csn, int gpio_gdo0, int spi_freq_hz)
+{
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    s_config.radio.enabled    = enabled;
+    s_config.radio.gpio_miso  = gpio_miso;
+    s_config.radio.gpio_mosi  = gpio_mosi;
+    s_config.radio.gpio_sck   = gpio_sck;
+    s_config.radio.gpio_csn   = gpio_csn;
+    s_config.radio.gpio_gdo0  = gpio_gdo0;
+    s_config.radio.spi_freq_hz = spi_freq_hz ? spi_freq_hz : CONFIG_RADIO_DEFAULT_SPI_FREQ;
     xSemaphoreGive(s_mutex);
     mark_dirty();
     return ESP_OK;

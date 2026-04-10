@@ -3,6 +3,12 @@
 #include "cosmo.h"
 #include "esp_err.h"
 
+typedef enum {
+    RADIO_STATE_NOT_CONFIGURED = 0,
+    RADIO_STATE_ERROR,
+    RADIO_STATE_OK,
+} radio_state_t;
+
 /**
  * @brief Initialise the radio subsystem.
  *

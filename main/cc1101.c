@@ -11,18 +11,15 @@
 
 static const char *TAG = "cc1101";
 
-/* ── Pin definitions ─────────────────────────────────────────────────────── */
+/* ── Runtime pin/speed configuration ────────────────────────────────────── */
 
-#define MISO_GPIO  19
-#define SCK_GPIO   18
-#define MOSI_GPIO  23
-#define CSN_GPIO    5
-/* GDO0_GPIO is in cc1101.h (CC1101_GDO0_GPIO = 15) */
+static int s_miso_gpio;
+static int s_mosi_gpio;
+static int s_sck_gpio;
+static int s_csn_gpio;
+static int s_spi_freq_hz;
 
-/* ── SPI ─────────────────────────────────────────────────────────────────── */
-
-#define SPI_HOST_ID  SPI2_HOST
-#define SPI_FREQ_HZ  500000
+#define SPI_HOST_ID SPI2_HOST
 
 static spi_device_handle_t s_spi;
 
@@ -135,9 +132,9 @@ static const uint8_t cc1101_patable[8] = {
 
 /* ── Low-level SPI helpers ───────────────────────────────────────────────── */
 
-#define cc1101_select()   gpio_set_level(CSN_GPIO, 0)
-#define cc1101_deselect() gpio_set_level(CSN_GPIO, 1)
-#define wait_miso()       while (gpio_get_level(MISO_GPIO) > 0) {}
+static inline void cc1101_select(void)   { gpio_set_level(s_csn_gpio, 0); }
+static inline void cc1101_deselect(void) { gpio_set_level(s_csn_gpio, 1); }
+static inline void wait_miso(void)       { while (gpio_get_level(s_miso_gpio) > 0) {} }
 
 static uint8_t spi_xfer(uint8_t byte)
 {
@@ -249,20 +246,27 @@ static void cc1101_apply_config(void)
 
 /* ── Public API ──────────────────────────────────────────────────────────── */
 
-esp_err_t cc1101_init(void)
+esp_err_t cc1101_init(const cc1101_config_t *cfg)
 {
+    /* Store runtime pin config */
+    s_miso_gpio  = cfg->gpio_miso;
+    s_mosi_gpio  = cfg->gpio_mosi;
+    s_sck_gpio   = cfg->gpio_sck;
+    s_csn_gpio   = cfg->gpio_csn;
+    s_spi_freq_hz = cfg->spi_freq_hz;
+
     /* ── SPI bus ── */
     spi_bus_config_t buscfg = {
-        .sclk_io_num   = SCK_GPIO,
-        .mosi_io_num   = MOSI_GPIO,
-        .miso_io_num   = MISO_GPIO,
+        .sclk_io_num   = s_sck_gpio,
+        .mosi_io_num   = s_mosi_gpio,
+        .miso_io_num   = s_miso_gpio,
         .quadwp_io_num = -1,
         .quadhd_io_num = -1,
     };
     ESP_ERROR_CHECK(spi_bus_initialize(SPI_HOST_ID, &buscfg, SPI_DMA_CH_AUTO));
 
     spi_device_interface_config_t devcfg = {
-        .clock_speed_hz = SPI_FREQ_HZ,
+        .clock_speed_hz = s_spi_freq_hz,
         .mode           = 0,
         .spics_io_num   = -1,
         .queue_size     = 4,
@@ -271,14 +275,14 @@ esp_err_t cc1101_init(void)
     ESP_ERROR_CHECK(spi_bus_add_device(SPI_HOST_ID, &devcfg, &s_spi));
 
     /* ── CSN GPIO ── */
-    gpio_reset_pin(CSN_GPIO);
-    gpio_set_direction(CSN_GPIO, GPIO_MODE_OUTPUT);
-    gpio_set_level(CSN_GPIO, 1);
+    gpio_reset_pin(s_csn_gpio);
+    gpio_set_direction(s_csn_gpio, GPIO_MODE_OUTPUT);
+    gpio_set_level(s_csn_gpio, 1);
 
     /* ── GDO0 GPIO (configured as input with NEGEDGE interrupt type;
      *    the ISR handler is installed by radio.c via gpio_isr_handler_add) ── */
     gpio_config_t io = {
-        .pin_bit_mask = 1ULL << CC1101_GDO0_GPIO,
+        .pin_bit_mask = 1ULL << cfg->gpio_gdo0,
         .mode         = GPIO_MODE_INPUT,
         .pull_up_en   = GPIO_PULLUP_ENABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,

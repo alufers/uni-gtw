@@ -1,7 +1,7 @@
 import { JSX } from "preact";
 
 const BASE =
-  "inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-zinc-700 bg-zinc-900 text-xs";
+  "inline-flex items-center gap-1.5 px-2 py-1 rounded border border-zinc-700 bg-zinc-900 text-xs";
 
 interface ChipProps extends Omit<JSX.HTMLAttributes<HTMLSpanElement>, "class"> {
   class?: string;
@@ -21,7 +21,7 @@ interface ChipButtonProps extends Omit<JSX.HTMLAttributes<HTMLButtonElement>, "c
 
 export function ChipButton({ class: cls = "", children, ...rest }: ChipButtonProps) {
   return (
-    <button class={`${BASE} cursor-pointer border-0 ${cls}`} {...rest}>
+    <button class={`${BASE} cursor-pointer ${cls}`} {...rest}>
       {children}
     </button>
   );
