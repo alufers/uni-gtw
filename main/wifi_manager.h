@@ -2,6 +2,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include "esp_err.h"
+#include "esp_netif.h"
 
 #define WIFI_NVS_NAMESPACE     "wifi"
 #define WIFI_NVS_KEY_SSID      "ssid"
@@ -28,3 +29,4 @@ esp_err_t       wifi_manager_scan(wifi_scan_result_t *out, uint16_t *out_count);
 wifi_mgr_mode_t wifi_manager_get_mode(void);
 bool            wifi_manager_get_rssi(int8_t *out_rssi);
 bool            wifi_manager_get_sta_ssid(char *out_ssid, size_t len);
+esp_netif_t    *wifi_manager_get_sta_netif(void);

@@ -1,4 +1,5 @@
 #include "channel.h"
+#include "config.h"
 #include "radio.h"
 #include "webserver.h"
 
@@ -12,135 +13,23 @@
 #include "esp_random.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
-#include "freertos/timers.h"
-#include "freertos/task.h"
 #include "cJSON.h"
 
 static const char *TAG = "channel";
-static const char *CONFIG_PATH = "/littlefs/config.json";
 
 /* ── State ───────────────────────────────────────────────────────────────── */
 
 static cosmo_channel_t   s_channels[CHANNEL_MAX_COUNT];
 static int               s_channel_count = 0;
 static SemaphoreHandle_t s_mutex;
-static TimerHandle_t     s_save_timer;
-static TaskHandle_t      s_save_task;
 
-/* ── Config save/load ────────────────────────────────────────────────────── */
-
-static void config_save(void)
-{
-    xSemaphoreTake(s_mutex, portMAX_DELAY);
-    int count = s_channel_count;
-    cosmo_channel_t snap[CHANNEL_MAX_COUNT];
-    memcpy(snap, s_channels, (size_t)count * sizeof(cosmo_channel_t));
-    xSemaphoreGive(s_mutex);
-
-    cJSON *root = cJSON_CreateObject();
-    cJSON *arr  = cJSON_CreateArray();
-    for (int i = 0; i < count; i++) {
-        cJSON *ch = cJSON_CreateObject();
-        cJSON_AddStringToObject(ch, "name",    snap[i].name);
-        cJSON_AddStringToObject(ch, "proto",   snap[i].proto == PROTO_COSMO_2WAY ? "2way" : "1way");
-        cJSON_AddNumberToObject(ch, "serial",  (double)(uint32_t)snap[i].serial);
-        cJSON_AddNumberToObject(ch, "counter", (double)snap[i].counter);
-        cJSON_AddItemToArray(arr, ch);
-    }
-    cJSON_AddItemToObject(root, "channels", arr);
-
-    char *str = cJSON_PrintUnformatted(root);
-    cJSON_Delete(root);
-
-    if (str) {
-        FILE *f = fopen(CONFIG_PATH, "w");
-        if (f) {
-            fputs(str, f);
-            fclose(f);
-            ESP_LOGI(TAG, "Config saved (%d channels)", count);
-        } else {
-            ESP_LOGW(TAG, "Failed to open config for writing");
-        }
-        free(str);
-    }
-}
-
-static void config_load(void)
-{
-    FILE *f = fopen(CONFIG_PATH, "r");
-    if (!f) {
-        ESP_LOGI(TAG, "No config file found, starting fresh");
-        return;
-    }
-
-    fseek(f, 0, SEEK_END);
-    long size = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    if (size <= 0 || size > 65536) { fclose(f); return; }
-
-    char *buf = malloc((size_t)size + 1);
-    if (!buf) { fclose(f); return; }
-    fread(buf, 1, (size_t)size, f);
-    fclose(f);
-    buf[size] = '\0';
-
-    cJSON *root = cJSON_Parse(buf);
-    free(buf);
-    if (!root) {
-        ESP_LOGW(TAG, "Config JSON parse error");
-        return;
-    }
-
-    cJSON *arr = cJSON_GetObjectItem(root, "channels");
-    if (!cJSON_IsArray(arr)) {
-        cJSON_Delete(root);
-        return;
-    }
-
-    int count = 0;
-    cJSON *item;
-    cJSON_ArrayForEach(item, arr) {
-        if (count >= CHANNEL_MAX_COUNT) break;
-        const char *name      = cJSON_GetStringValue(cJSON_GetObjectItem(item, "name"));
-        const char *proto_str = cJSON_GetStringValue(cJSON_GetObjectItem(item, "proto"));
-        cJSON *serial_j  = cJSON_GetObjectItem(item, "serial");
-        cJSON *counter_j = cJSON_GetObjectItem(item, "counter");
-        if (!name || !proto_str || !cJSON_IsNumber(serial_j) || !cJSON_IsNumber(counter_j))
-            continue;
-        cosmo_channel_t *ch = &s_channels[count++];
-        memset(ch, 0, sizeof(*ch));
-        snprintf(ch->name, sizeof(ch->name), "%s", name);
-        ch->proto   = (strcmp(proto_str, "2way") == 0) ? PROTO_COSMO_2WAY : PROTO_COSMO_1WAY;
-        ch->serial   = (uint32_t)cJSON_GetNumberValue(serial_j);
-        ch->serial  &= ~0x1F;
-        ch->counter  = (uint16_t)cJSON_GetNumberValue(counter_j);
-        ch->state    = CHANNEL_STATE_UNKNOWN;
-        ch->position = -1;
-    }
-    s_channel_count = count;
-    cJSON_Delete(root);
-    ESP_LOGI(TAG, "Loaded %d channel(s) from config", count);
-}
-
-static void save_task_fn(void *arg)
-{
-    while (1) {
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-        config_save();
-    }
-}
-
-static void save_timer_cb(TimerHandle_t t)
-{
-    if (s_save_task)
-        xTaskNotifyGive(s_save_task);
-}
-
-/* Mark channels dirty – resets the 5-second save debounce timer. */
+/* Mark channels dirty — caller must hold s_mutex */
 static void channel_mark_dirty(void)
 {
-    if (s_save_timer)
-        xTimerReset(s_save_timer, 0);
+    cosmo_channel_t snap[CHANNEL_MAX_COUNT];
+    int count = s_channel_count;
+    memcpy(snap, s_channels, (size_t)count * sizeof(cosmo_channel_t));
+    config_save_channels(snap, count); /* debounced write via config module */
 }
 
 /* ── JSON helpers ────────────────────────────────────────────────────────── */
@@ -249,12 +138,7 @@ void channel_init(void)
 {
     s_mutex = xSemaphoreCreateMutex();
     s_channel_count = 0;
-
-    config_load();
-
-    s_save_timer = xTimerCreate("chan_save", pdMS_TO_TICKS(5000),
-                                pdFALSE, NULL, save_timer_cb);
-    xTaskCreate(save_task_fn, "chan_save", 4096, NULL, 5, &s_save_task);
+    config_load_channels(s_channels, &s_channel_count);
 }
 
 esp_err_t channel_create(const char *name, cosmo_proto_t proto)

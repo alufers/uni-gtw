@@ -4,8 +4,10 @@
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "nvs_flash.h"
+#include "mdns.h"
 
 #include "channel.h"
+#include "config.h"
 #include "esp_littlefs.h"
 #include "radio.h"
 #include "webserver.h"
@@ -45,6 +47,9 @@ void app_main(void)
         return;
     }
 
+    /* Load persisted config (hostname, mqtt, channels) */
+    config_init();
+
     /* Init network stack before anything that opens sockets */
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
@@ -52,7 +57,25 @@ void app_main(void)
     webserver_early_init();
     channel_init();
     webserver_start();
+
+    /* Start WiFi — netifs are created here */
     wifi_manager_init();
+
+    /* Apply hostname to STA netif and mDNS */
+    gateway_config_t cfg;
+    config_get(&cfg);
+
+    esp_netif_t *sta_netif = wifi_manager_get_sta_netif();
+    if (sta_netif)
+        esp_netif_set_hostname(sta_netif, cfg.hostname);
+
+    ESP_ERROR_CHECK(mdns_init());
+    mdns_hostname_set(cfg.hostname);
+    mdns_instance_name_set("uni-gtw RF Gateway");
+    mdns_service_add(NULL, "_http",    "_tcp", 80, NULL, 0);
+    mdns_service_add(NULL, "_uni_gtw", "_tcp", 80, NULL, 0);
+    ESP_LOGI(TAG, "mDNS started: %s.local", cfg.hostname);
+
     g_radio_ok = (radio_init() == ESP_OK);
     webserver_start_status_timer();
 }

@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState } from "preact/hooks";
-import { Radio, WifiZero } from "lucide-preact";
+import { Clock, ClockArrowUp, Plug, Radio, Unplug, WifiZero } from "lucide-preact";
 import { Console } from "./Console";
 import { Channels, Channel } from "./Channels";
+import { Settings } from "./Settings";
+import { Tabs } from "./Tabs";
+import { Chip, ChipButton } from "./Chip";
 import { useJsonWebsocket, ReadyState } from "./useWebsocket";
 import { WifiModal } from "./WifiModal";
 import { rssiToWifiIcon } from "./icons";
@@ -17,12 +20,18 @@ function formatUptime(seconds: number): string {
   return `${m}m ${s}s`;
 }
 
+const TABS = [
+  { id: "control",  label: "Control"  },
+  { id: "settings", label: "Settings" },
+];
+
 export function App() {
   const [lines, setLines] = useState<string[]>([]);
   const [channels, setChannels] = useState<Channel[]>([]);
   const [status, setStatus] = useState<StatusPayload | null>(null);
   const [scanResults, setScanResults] = useState<ScanEntry[] | null>(null);
   const [showWifiModal, setShowWifiModal] = useState(false);
+  const [activeTab, setActiveTab] = useState("control");
   const wifiDismissedRef = useRef(false);
 
   const { lastJsonMessage, sendJsonMessage, readyState } =
@@ -66,83 +75,102 @@ export function App() {
 
   const connected = readyState === ReadyState.OPEN;
 
-  /* WiFi status indicator */
-  let wifiIndicator: preact.JSX.Element | null = null;
-  if (status) {
-    if (status.wifi_mode === "ap") {
-      wifiIndicator = (
-        <button
-          class="flex items-center gap-1 text-amber-400 cursor-pointer bg-transparent border-0 p-0 text-xs"
-          onClick={() => setShowWifiModal(true)}
-          title="Click to configure WiFi"
-        >
-          <WifiZero size={14} />
-          AP: UNI-GTW
-        </button>
-      );
-    } else if (status.wifi_rssi !== null) {
-      const WifiIcon = rssiToWifiIcon(status.wifi_rssi);
-      wifiIndicator = (
-        <span class="flex items-center gap-1 text-green-400 text-xs">
-          <WifiIcon size={14} />
-          {status.wifi_ssid && <span>{status.wifi_ssid}</span>}
-          <span>{status.wifi_rssi} dBm</span>
-        </span>
-      );
-    }
-  }
-
-  /* Uptime and local time */
   const uptimeStr = status ? formatUptime(status.uptime) : null;
-  const timeStr = status && status.time > 0
-    ? new Date(status.time * 1000).toLocaleTimeString()
-    : null;
+  const timeStr =
+    status && status.time > 0
+      ? new Date(status.time * 1000).toLocaleTimeString()
+      : null;
 
   return (
     <div class="flex flex-col h-full bg-zinc-950 text-zinc-100 font-mono">
       {/* Top bar */}
-      <div class="flex items-center px-3 py-1 border-b border-zinc-800 text-xs shrink-0 gap-2">
-        <span class="flex-1 font-bold tracking-wide">uni-gtw</span>
+      <div class="flex items-center px-3 py-1.5 border-b border-zinc-800 shrink-0 gap-1.5">
+        <span class="flex-1 font-bold tracking-wide text-xs">uni-gtw</span>
 
         {/* Local time */}
         {timeStr && (
-          <span class="text-zinc-400 text-xs">{timeStr}</span>
+          <Chip title="Local time">
+            <Clock size={11} class="shrink-0" />
+            {timeStr}
+          </Chip>
         )}
 
         {/* Uptime */}
         {uptimeStr && (
-          <span class="text-zinc-500 text-xs" title="Uptime">up {uptimeStr}</span>
+          <Chip title="Uptime since last boot">
+            <ClockArrowUp size={11} class="shrink-0" />
+            {uptimeStr}
+          </Chip>
         )}
 
-        {/* Radio status */}
+        {/* Radio */}
         {status && (
-          <span
-            class={`flex items-center gap-1 ${status.radio_ok ? "text-green-400" : "text-red-400"}`}
+          <Chip
+            class={
+              status.radio_ok
+                ? "text-green-400 border-green-900"
+                : "text-red-400 border-red-900"
+            }
             title={status.radio_ok ? "Radio OK" : "Radio error"}
           >
-            <Radio size={14} />
-          </span>
+            <Radio size={11} />
+          </Chip>
         )}
 
-        {/* WiFi status */}
-        {wifiIndicator}
+        {/* WiFi */}
+        {status && status.wifi_mode === "ap" && (
+          <ChipButton
+            class="text-amber-400 border-amber-900"
+            onClick={() => setShowWifiModal(true)}
+            title="Running in AP mode — click to configure WiFi"
+          >
+            <WifiZero size={11} />
+            AP: UNI-GTW
+          </ChipButton>
+        )}
+        {status && status.wifi_mode === "sta" && status.wifi_rssi !== null && (() => {
+          const WifiIcon = rssiToWifiIcon(status.wifi_rssi);
+          return (
+            <Chip class="text-green-400 border-green-900">
+              <WifiIcon size={11} />
+              {status.wifi_ssid && <span>{status.wifi_ssid}</span>}
+              <span>{status.wifi_rssi} dBm</span>
+            </Chip>
+          );
+        })()}
 
-        {/* WS connection */}
-        <span class={`w-2 h-2 rounded-full ${connected ? "bg-green-500" : "bg-red-500"}`} />
-        <span class={connected ? "text-green-400" : "text-red-400"}>
+        {/* WebSocket connection */}
+        <Chip
+          class={
+            connected
+              ? "text-green-400 border-green-900"
+              : "text-red-400 border-red-900"
+          }
+          title={connected ? "WebSocket connected" : "WebSocket disconnected"}
+        >
+          {connected ? <Plug size={11} /> : <Unplug size={11} />}
           {connected ? "Connected" : "Disconnected"}
-        </span>
+        </Chip>
       </div>
+
+      {/* Tab bar */}
+      <Tabs tabs={TABS} active={activeTab} onChange={setActiveTab} />
 
       {/* Main content */}
-      <div class="flex flex-1 overflow-hidden">
-        <div class="w-80 min-w-52 border-r border-zinc-800 overflow-y-auto">
-          <Channels channels={channels} onSend={sendJsonMessage} />
+      {activeTab === "control" ? (
+        <div class="flex flex-1 overflow-hidden">
+          <div class="w-80 min-w-52 border-r border-zinc-800 overflow-y-auto">
+            <Channels channels={channels} onSend={sendJsonMessage} />
+          </div>
+          <div class="flex-1 overflow-hidden">
+            <Console lines={lines} />
+          </div>
         </div>
+      ) : (
         <div class="flex-1 overflow-hidden">
-          <Console lines={lines} />
+          <Settings />
         </div>
-      </div>
+      )}
 
       {/* WiFi modal */}
       {showWifiModal && (

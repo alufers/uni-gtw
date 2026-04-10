@@ -1,5 +1,6 @@
 #include "webserver.h"
 #include "channel.h"
+#include "config.h"
 #include "wifi_manager.h"
 
 #include <string.h>
@@ -16,6 +17,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "mdns.h"
 
 static const char *TAG = "webserver";
 
@@ -452,6 +454,106 @@ void gtw_console_log(const char *fmt, ...)
     free(json);
 }
 
+/* ── Settings REST handlers ──────────────────────────────────────────────── */
+
+static char *build_settings_json(void)
+{
+    gateway_config_t cfg;
+    config_get(&cfg);
+
+    cJSON *root   = cJSON_CreateObject();
+    cJSON *mqtt_j = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "hostname", cfg.hostname);
+    cJSON_AddBoolToObject  (mqtt_j, "enabled",  cfg.mqtt.enabled);
+    cJSON_AddStringToObject(mqtt_j, "broker",   cfg.mqtt.broker);
+    cJSON_AddNumberToObject(mqtt_j, "port",     cfg.mqtt.port);
+    cJSON_AddStringToObject(mqtt_j, "username", cfg.mqtt.username);
+    cJSON_AddStringToObject(mqtt_j, "password", cfg.mqtt.password);
+    cJSON_AddItemToObject(root, "mqtt", mqtt_j);
+
+    char *json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    return json;
+}
+
+static esp_err_t settings_get_handler(httpd_req_t *req)
+{
+    char *json = build_settings_json();
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json ? json : "{}");
+    free(json);
+    return ESP_OK;
+}
+
+static esp_err_t settings_post_handler(httpd_req_t *req)
+{
+    if (req->content_len <= 0 || req->content_len > 4096) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid body");
+        return ESP_OK;
+    }
+
+    char *buf = malloc((size_t)req->content_len + 1);
+    if (!buf) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OOM");
+        return ESP_OK;
+    }
+    int received = httpd_req_recv(req, buf, req->content_len);
+    if (received <= 0) { free(buf); return received == 0 ? ESP_OK : ESP_FAIL; }
+    buf[received] = '\0';
+
+    cJSON *root = cJSON_Parse(buf);
+    free(buf);
+    if (!root) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid JSON");
+        return ESP_OK;
+    }
+
+    /* Hostname */
+    const char *hostname = cJSON_GetStringValue(cJSON_GetObjectItem(root, "hostname"));
+    if (hostname && hostname[0]) {
+        config_set_hostname(hostname);
+        mdns_hostname_set(hostname);
+        esp_netif_t *sta = wifi_manager_get_sta_netif();
+        if (sta) esp_netif_set_hostname(sta, hostname);
+        ESP_LOGI(TAG, "Hostname updated to: %s", hostname);
+    }
+
+    /* MQTT */
+    cJSON *mqtt_j = cJSON_GetObjectItem(root, "mqtt");
+    if (cJSON_IsObject(mqtt_j)) {
+        gateway_config_t current;
+        config_get(&current);
+
+        cJSON *en = cJSON_GetObjectItem(mqtt_j, "enabled");
+        bool enabled = cJSON_IsBool(en) ? cJSON_IsTrue(en) : current.mqtt.enabled;
+
+        const char *broker = cJSON_GetStringValue(cJSON_GetObjectItem(mqtt_j, "broker"));
+        if (!broker) broker = current.mqtt.broker;
+
+        cJSON *port_j = cJSON_GetObjectItem(mqtt_j, "port");
+        uint16_t port = cJSON_IsNumber(port_j)
+                      ? (uint16_t)cJSON_GetNumberValue(port_j)
+                      : current.mqtt.port;
+
+        const char *username = cJSON_GetStringValue(cJSON_GetObjectItem(mqtt_j, "username"));
+        if (!username) username = current.mqtt.username;
+
+        const char *password = cJSON_GetStringValue(cJSON_GetObjectItem(mqtt_j, "password"));
+        if (!password) password = current.mqtt.password;
+
+        config_set_mqtt(broker, port, username, password, enabled);
+    }
+
+    cJSON_Delete(root);
+
+    /* Respond with the final saved state */
+    char *json = build_settings_json();
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json ? json : "{}");
+    free(json);
+    return ESP_OK;
+}
+
 /* ── Early init (before WiFi) ────────────────────────────────────────────── */
 
 void webserver_early_init(void)
@@ -491,11 +593,23 @@ void webserver_start(void)
         .handler      = ws_handler,
         .is_websocket = true,
     };
+    static const httpd_uri_t uri_settings_get = {
+        .uri    = "/api/settings",
+        .method = HTTP_GET,
+        .handler = settings_get_handler,
+    };
+    static const httpd_uri_t uri_settings_post = {
+        .uri    = "/api/settings",
+        .method = HTTP_POST,
+        .handler = settings_post_handler,
+    };
 
     httpd_register_uri_handler(s_server, &uri_root);
     httpd_register_uri_handler(s_server, &uri_js);
     httpd_register_uri_handler(s_server, &uri_css);
     httpd_register_uri_handler(s_server, &uri_ws);
+    httpd_register_uri_handler(s_server, &uri_settings_get);
+    httpd_register_uri_handler(s_server, &uri_settings_post);
 
     ESP_LOGI(TAG, "HTTP server started");
 }

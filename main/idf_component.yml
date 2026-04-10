@@ -1,3 +1,4 @@
 dependencies:
   espressif/json_generator: '>=0.1.0'
   espressif/cjson: ^1.7.19~2
+  espressif/mdns: "^1.11.0"

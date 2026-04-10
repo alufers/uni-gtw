@@ -336,3 +336,8 @@ bool wifi_manager_get_sta_ssid(char *out_ssid, size_t len)
     }
     return false;
 }
+
+esp_netif_t *wifi_manager_get_sta_netif(void)
+{
+    return s_sta_netif;
+}

@@ -9,6 +9,7 @@ idf_component_register(
         "cc1101.c"
         "radio.c"
         "channel.c"
+        "config.c"
     INCLUDE_DIRS "."
     REQUIRES
         esp_wifi
@@ -23,6 +24,7 @@ idf_component_register(
         cosmo
         esp_littlefs
         lwip
+        mdns
     EMBED_FILES
         ${WEB_DIST_DIR}/index.html
         ${WEB_DIST_DIR}/app.js
