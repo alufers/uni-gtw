@@ -199,6 +199,9 @@ static void build_and_send_status(int fd /* -1 = broadcast */)
     int64_t uptime_us = esp_timer_get_time();
     int64_t uptime_s  = uptime_us / 1000000LL;
 
+    char   sta_ssid[33] = {0};
+    bool   has_ssid = wifi_manager_get_sta_ssid(sta_ssid, sizeof(sta_ssid));
+
     cJSON *root    = cJSON_CreateObject();
     cJSON *payload = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "cmd", "status");
@@ -210,6 +213,10 @@ static void build_and_send_status(int fd /* -1 = broadcast */)
         cJSON_AddNumberToObject(payload, "wifi_rssi", rssi);
     else
         cJSON_AddNullToObject(payload, "wifi_rssi");
+    if (has_ssid)
+        cJSON_AddStringToObject(payload, "wifi_ssid", sta_ssid);
+    else
+        cJSON_AddNullToObject(payload, "wifi_ssid");
     cJSON_AddItemToObject(root, "payload", payload);
 
     char *json = cJSON_PrintUnformatted(root);

@@ -5,6 +5,7 @@ export interface StatusPayload {
   time: number;
   wifi_mode: "ap" | "sta";
   wifi_rssi: number | null;
+  wifi_ssid: string | null;
   radio_ok: boolean;
 }
 

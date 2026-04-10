@@ -326,3 +326,13 @@ bool wifi_manager_get_rssi(int8_t *out_rssi)
     }
     return false;
 }
+
+bool wifi_manager_get_sta_ssid(char *out_ssid, size_t len)
+{
+    wifi_ap_record_t info;
+    if (esp_wifi_sta_get_ap_info(&info) == ESP_OK) {
+        snprintf(out_ssid, len, "%s", (char *)info.ssid);
+        return true;
+    }
+    return false;
+}

@@ -7,6 +7,16 @@ import { WifiModal } from "./WifiModal";
 import { rssiToWifiIcon } from "./icons";
 import { WsMessage, StatusPayload, ScanEntry } from "./wsTypes";
 
+function formatUptime(seconds: number): string {
+  const d = Math.floor(seconds / 86400);
+  const h = Math.floor((seconds % 86400) / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = seconds % 60;
+  if (d > 0) return `${d}d ${h}h ${m}m`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m ${s}s`;
+}
+
 export function App() {
   const [lines, setLines] = useState<string[]>([]);
   const [channels, setChannels] = useState<Channel[]>([]);
@@ -75,17 +85,34 @@ export function App() {
       wifiIndicator = (
         <span class="flex items-center gap-1 text-green-400 text-xs">
           <WifiIcon size={14} />
-          {status.wifi_rssi} dBm
+          {status.wifi_ssid && <span>{status.wifi_ssid}</span>}
+          <span>{status.wifi_rssi} dBm</span>
         </span>
       );
     }
   }
+
+  /* Uptime and local time */
+  const uptimeStr = status ? formatUptime(status.uptime) : null;
+  const timeStr = status && status.time > 0
+    ? new Date(status.time * 1000).toLocaleTimeString()
+    : null;
 
   return (
     <div class="flex flex-col h-full bg-zinc-950 text-zinc-100 font-mono">
       {/* Top bar */}
       <div class="flex items-center px-3 py-1 border-b border-zinc-800 text-xs shrink-0 gap-2">
         <span class="flex-1 font-bold tracking-wide">uni-gtw</span>
+
+        {/* Local time */}
+        {timeStr && (
+          <span class="text-zinc-400 text-xs">{timeStr}</span>
+        )}
+
+        {/* Uptime */}
+        {uptimeStr && (
+          <span class="text-zinc-500 text-xs" title="Uptime">up {uptimeStr}</span>
+        )}
 
         {/* Radio status */}
         {status && (
