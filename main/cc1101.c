@@ -263,7 +263,11 @@ esp_err_t cc1101_init(const cc1101_config_t *cfg)
         .quadwp_io_num = -1,
         .quadhd_io_num = -1,
     };
-    ESP_ERROR_CHECK(spi_bus_initialize(SPI_HOST_ID, &buscfg, SPI_DMA_CH_AUTO));
+    esp_err_t err = spi_bus_initialize(SPI_HOST_ID, &buscfg, SPI_DMA_CH_AUTO);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "spi_bus_initialize failed: %s", esp_err_to_name(err));
+        return err;
+    }
 
     spi_device_interface_config_t devcfg = {
         .clock_speed_hz = s_spi_freq_hz,
@@ -272,7 +276,12 @@ esp_err_t cc1101_init(const cc1101_config_t *cfg)
         .queue_size     = 4,
         .flags          = SPI_DEVICE_NO_DUMMY,
     };
-    ESP_ERROR_CHECK(spi_bus_add_device(SPI_HOST_ID, &devcfg, &s_spi));
+    err = spi_bus_add_device(SPI_HOST_ID, &devcfg, &s_spi);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "spi_bus_add_device failed: %s", esp_err_to_name(err));
+        spi_bus_free(SPI_HOST_ID);
+        return err;
+    }
 
     /* ── CSN GPIO ── */
     gpio_reset_pin(s_csn_gpio);
@@ -307,6 +316,10 @@ esp_err_t cc1101_init(const cc1101_config_t *cfg)
         gtw_console_log("CC1101 not found! PARTNUM=0x%02X VERSION=0x%02X",
                         partnum, version);
         ESP_LOGE(TAG, "CC1101 not found");
+        spi_bus_remove_device(s_spi);
+        s_spi = NULL;
+        spi_bus_free(SPI_HOST_ID);
+        gpio_reset_pin(s_csn_gpio);
         return ESP_FAIL;
     }
     gtw_console_log("CC1101 init OK  PARTNUM=0x%02X VERSION=0x%02X",
@@ -320,4 +333,16 @@ esp_err_t cc1101_init(const cc1101_config_t *cfg)
                     ptable[4], ptable[5], ptable[6], ptable[7]);
 
     return ESP_OK;
+}
+
+void cc1101_deinit(void)
+{
+    if (!s_spi) return;
+    cc1101_enter_idle();
+    spi_bus_remove_device(s_spi);
+    s_spi = NULL;
+    spi_bus_free(SPI_HOST_ID);
+    /* GPIO pins are released by spi_bus_free for SPI lines;
+     * CSN was managed manually so reset it. */
+    gpio_reset_pin(s_csn_gpio);
 }

@@ -582,6 +582,16 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
 
         config_set_radio(enabled, gpio_miso, gpio_mosi, gpio_sck,
                          gpio_csn, gpio_gdo0, spi_freq_hz);
+
+        /* Apply immediately — reinit hardware only if config actually changed */
+        esp_err_t radio_err = radio_apply_config();
+        if (radio_err == ESP_ERR_NOT_SUPPORTED)
+            g_radio_state = RADIO_STATE_NOT_CONFIGURED;
+        else if (radio_err != ESP_OK)
+            g_radio_state = RADIO_STATE_ERROR;
+        else
+            g_radio_state = RADIO_STATE_OK;
+        ESP_LOGI(TAG, "Radio state after apply: %d", (int)g_radio_state);
     }
 
     cJSON_Delete(root);

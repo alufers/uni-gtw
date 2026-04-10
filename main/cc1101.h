@@ -17,6 +17,7 @@ typedef struct {
  *        register configuration.  Does NOT create any task or install an ISR.
  */
 esp_err_t cc1101_init(const cc1101_config_t *cfg);
+void      cc1101_deinit(void); /* release SPI bus and GPIO; call cc1101_enter_idle first */
 
 /* ── State transitions ───────────────────────────────────────────────────── */
 void cc1101_enter_idle(void);

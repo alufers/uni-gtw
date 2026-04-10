@@ -159,7 +159,7 @@ export function Settings() {
 
   return (
     <div class="p-4 overflow-y-auto h-full">
-      <div class="max-w-lg">
+      <div class="max-w-lg mx-auto">
 
         {/* ── Network ──────────────────────────────────────────────────── */}
         <section class="mb-6">
@@ -200,9 +200,15 @@ export function Settings() {
             <span class="text-xs text-zinc-300">Enable radio</span>
           </label>
 
+          {radioDisabled && (
+            <div class="border border-amber-800 bg-amber-950 text-amber-300 text-xs rounded p-3 mb-4">
+              Radio is disabled. The gateway will not be able to control or receive
+              status from blinds until the radio is enabled and saved.
+            </div>
+          )}
+
           <p class="text-zinc-500 text-xs mb-3">
-            GPIO pin numbers for the CC1101 SPI connection. Changes take effect
-            after restart.
+            GPIO pin numbers for the CC1101 SPI connection.
           </p>
 
           <div class={radioDisabled ? "opacity-40 pointer-events-none" : ""}>
@@ -321,9 +327,7 @@ export function Settings() {
             {saveStatus === "saving" ? "Saving…" : "Save settings"}
           </Button>
           {saveStatus === "saved" && (
-            <span class="text-green-400 text-xs">
-              Saved! Radio changes take effect after restart.
-            </span>
+            <span class="text-green-400 text-xs">Saved!</span>
           )}
           {saveStatus === "error" && (
             <span class="text-red-400 text-xs">Error — check connection</span>

@@ -19,6 +19,15 @@ typedef enum {
 esp_err_t radio_init(void);
 
 /**
+ * @brief Compare running radio config against the current persisted config and
+ *        reinitialize hardware only if something changed (or enable/disable).
+ *
+ * Returns the same codes as radio_init(): ESP_OK, ESP_ERR_NOT_SUPPORTED
+ * (radio disabled), or an error.  Safe to call from any task.
+ */
+esp_err_t radio_apply_config(void);
+
+/**
  * @brief Queue a packet for transmission.
  *
  * The radio task will idle the chip, transmit the packet (pkt->repeat + 1)

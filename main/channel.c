@@ -49,41 +49,21 @@ static const char *channel_state_name(cosmo_channel_state_t state)
     }
 }
 
-/* Minimal JSON string escape for user-supplied channel names */
-static size_t ch_json_escape(char *dst, size_t cap, const char *src)
+static cJSON *channel_to_cjson(const cosmo_channel_t *ch)
 {
-    size_t n = 0;
-    for (; *src && n + 7 < cap; src++) {
-        unsigned char c = (unsigned char)*src;
-        if      (c == '"')  { dst[n++] = '\\'; dst[n++] = '"';  }
-        else if (c == '\\') { dst[n++] = '\\'; dst[n++] = '\\'; }
-        else if (c == '\n') { dst[n++] = '\\'; dst[n++] = 'n';  }
-        else if (c == '\r') { dst[n++] = '\\'; dst[n++] = 'r';  }
-        else if (c == '\t') { dst[n++] = '\\'; dst[n++] = 't';  }
-        else if (c < 0x20)  { n += (size_t)snprintf(dst + n, cap - n, "\\u%04X", c); }
-        else                { dst[n++] = (char)c; }
-    }
-    dst[n] = '\0';
-    return n;
-}
-
-static size_t channel_to_json(const cosmo_channel_t *ch, char *buf, size_t cap)
-{
-    const char *proto_str = (ch->proto == PROTO_COSMO_2WAY) ? "2way" : "1way";
-    char name_esc[128];
-    ch_json_escape(name_esc, sizeof(name_esc), ch->name);
-    size_t n = (size_t)snprintf(buf, cap,
-        "{\"serial\":%u,\"name\":\"%s\",\"proto\":\"%s\",\"counter\":%u"
-        ",\"state\":\"%s\",\"rssi\":%d,\"last_seen_ts\":%lld",
-        (unsigned)ch->serial, name_esc, proto_str,
-        (unsigned)ch->counter, channel_state_name(ch->state),
-        (int)ch->rssi, (long long)ch->last_seen_ts);
+    cJSON *obj = cJSON_CreateObject();
+    cJSON_AddNumberToObject(obj, "serial",       (double)(uint32_t)ch->serial);
+    cJSON_AddStringToObject(obj, "name",         ch->name);
+    cJSON_AddStringToObject(obj, "proto",        ch->proto == PROTO_COSMO_2WAY ? "2way" : "1way");
+    cJSON_AddNumberToObject(obj, "counter",      (double)ch->counter);
+    cJSON_AddStringToObject(obj, "state",        channel_state_name(ch->state));
+    cJSON_AddNumberToObject(obj, "rssi",         (double)ch->rssi);
+    cJSON_AddNumberToObject(obj, "last_seen_ts", (double)ch->last_seen_ts);
     if (ch->proto == PROTO_COSMO_2WAY && ch->position >= 0)
-        n += (size_t)snprintf(buf + n, cap - n, ",\"position\":%d", (int)ch->position);
+        cJSON_AddNumberToObject(obj, "position", (double)ch->position);
     else
-        n += (size_t)snprintf(buf + n, cap - n, ",\"position\":null");
-    n += (size_t)snprintf(buf + n, cap - n, "}");
-    return n;
+        cJSON_AddNullToObject(obj, "position");
+    return obj;
 }
 
 /* ── Internal helpers ────────────────────────────────────────────────────── */
@@ -124,12 +104,12 @@ static cosmo_channel_state_t rx_feedback_state(cosmo_cmd_t cmd, cosmo_channel_st
 
 static void broadcast_channel_update(const cosmo_channel_t *ch)
 {
-    char ch_json[320];
-    channel_to_json(ch, ch_json, sizeof(ch_json));
-
-    char json[400];
-    snprintf(json, sizeof(json), "{\"cmd\":\"channel_update\",\"payload\":%s}", ch_json);
-    webserver_ws_broadcast_json(json);
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "cmd", "channel_update");
+    cJSON_AddItemToObject(root, "payload", channel_to_cjson(ch));
+    char *json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (json) { webserver_ws_broadcast_json(json); free(json); }
 }
 
 /* ── Public API ──────────────────────────────────────────────────────────── */
@@ -197,10 +177,14 @@ esp_err_t channel_delete(uint32_t serial)
     xSemaphoreGive(s_mutex);
 
     ESP_LOGI(TAG, "Deleted channel serial=0x%08X", (unsigned)serial);
-    char json[64];
-    snprintf(json, sizeof(json),
-             "{\"cmd\":\"channel_deleted\",\"payload\":{\"serial\":%u}}", (unsigned)serial);
-    webserver_ws_broadcast_json(json);
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "cmd", "channel_deleted");
+    cJSON *payload = cJSON_CreateObject();
+    cJSON_AddNumberToObject(payload, "serial", (double)(uint32_t)serial);
+    cJSON_AddItemToObject(root, "payload", payload);
+    char *json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (json) { webserver_ws_broadcast_json(json); free(json); }
     return ESP_OK;
 }
 
@@ -269,30 +253,13 @@ void channel_send_all(int fd)
     memcpy(snapshot, s_channels, (size_t)count * sizeof(cosmo_channel_t));
     xSemaphoreGive(s_mutex);
 
-    /* Each channel JSON is ~320 bytes; add overhead for wrapper */
-    size_t cap = (size_t)count * 352 + 64;
-    if (cap < 64) cap = 64;
-    char *json = malloc(cap);
-    if (!json) return;
-
-    size_t n = 0;
-    n += (size_t)snprintf(json + n, cap - n, "{\"cmd\":\"channels\",\"payload\":[");
-    for (int i = 0; i < count; i++) {
-        if (i > 0 && n < cap) json[n++] = ',';
-        char ch_json[320];
-        channel_to_json(&snapshot[i], ch_json, sizeof(ch_json));
-        size_t ch_len = strlen(ch_json);
-        if (n + ch_len + 4 < cap) {
-            memcpy(json + n, ch_json, ch_len);
-            n += ch_len;
-        }
-    }
-    if (n < cap) {
-        json[n++] = ']';
-        json[n++] = '}';
-        json[n]   = '\0';
-    }
-
-    webserver_ws_send_json_to_fd(fd, json);
-    free(json);
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "cmd", "channels");
+    cJSON *arr = cJSON_CreateArray();
+    for (int i = 0; i < count; i++)
+        cJSON_AddItemToArray(arr, channel_to_cjson(&snapshot[i]));
+    cJSON_AddItemToObject(root, "payload", arr);
+    char *json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (json) { webserver_ws_send_json_to_fd(fd, json); free(json); }
 }
