@@ -10,12 +10,8 @@ export const enum ReadyState {
 
 export default function useWebsocket(webSocketUrl: string | null) {
   const [reconnectTick, setReconnectTick] = useState(0);
-  const [readyState, setReadyState] = useState<ReadyState>(
-    ReadyState.UNINSTANTIATED,
-  );
-  const [lastMessage, setLastMessage] = useState<MessageEvent<any> | null>(
-    null,
-  );
+  const [readyState, setReadyState] = useState<ReadyState>(ReadyState.UNINSTANTIATED);
+  const [lastMessage, setLastMessage] = useState<MessageEvent<any> | null>(null);
   const [webSocket, setWebSocket] = useState<WebSocket | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -73,9 +69,7 @@ export default function useWebsocket(webSocketUrl: string | null) {
     };
   }, [webSocketUrl, reconnectTick]);
 
-  const sendMessage = (
-    message: string | ArrayBuffer | Blob | ArrayBufferView<ArrayBuffer>,
-  ) => {
+  const sendMessage = (message: string | ArrayBuffer | Blob | ArrayBufferView<ArrayBuffer>) => {
     if (webSocket && readyState === ReadyState.OPEN) {
       webSocket.send(message);
     }

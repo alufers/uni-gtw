@@ -31,9 +31,7 @@ export function WifiModal({ onClose, onSubmit, onScan, scanResults }: WifiModalP
   }, [isOpen]);
 
   const ssidValid = ssid.trim().length >= 1 && ssid.trim().length <= 32;
-  const passValid = isOpen
-    ? true
-    : pass.length === 0 || (pass.length >= 8 && pass.length <= 63);
+  const passValid = isOpen ? true : pass.length === 0 || (pass.length >= 8 && pass.length <= 63);
   const canSubmit = ssidValid && passValid;
 
   const handleOk = () => {
@@ -57,7 +55,9 @@ export function WifiModal({ onClose, onSubmit, onScan, scanResults }: WifiModalP
         <div class="flex items-center justify-between mb-1">
           <span class="text-xs text-zinc-400">Networks</span>
           <Button
-            onClick={() => { onScan(); }}
+            onClick={() => {
+              onScan();
+            }}
             class="flex items-center gap-1 py-0.5 px-2"
           >
             <RefreshCw size={12} />
@@ -83,18 +83,17 @@ export function WifiModal({ onClose, onSubmit, onScan, scanResults }: WifiModalP
                 <button
                   key={entry.ssid}
                   class={`w-full text-left flex items-center gap-2 px-3 py-2 text-xs cursor-pointer border-0 border-b border-zinc-700 last:border-b-0
-                    ${selected
-                      ? "bg-blue-900 text-zinc-100"
-                      : "bg-transparent text-zinc-300 hover:bg-zinc-700"
+                    ${
+                      selected
+                        ? "bg-blue-900 text-zinc-100"
+                        : "bg-transparent text-zinc-300 hover:bg-zinc-700"
                     }`}
                   onClick={() => setSsid(entry.ssid)}
                 >
                   <WifiIcon size={14} />
                   <span class="flex-1 truncate">{entry.ssid}</span>
                   <span class="text-zinc-500">{entry.rssi} dBm</span>
-                  {entry.auth === 0 && (
-                    <span class="text-zinc-500 text-[10px]">open</span>
-                  )}
+                  {entry.auth === 0 && <span class="text-zinc-500 text-[10px]">open</span>}
                 </button>
               );
             })

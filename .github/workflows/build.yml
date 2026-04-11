@@ -27,6 +27,14 @@ jobs:
         run: pnpm run typecheck
         working-directory: main/web
 
+      - name: Lint (oxlint)
+        run: pnpm run lint
+        working-directory: main/web
+
+      - name: Format check (oxfmt)
+        run: pnpm run fmt:check
+        working-directory: main/web
+
   build:
     runs-on: ubuntu-latest
 

@@ -13,9 +13,7 @@ export function Console({ lines }: ConsoleProps) {
 
   return (
     <div class="flex flex-col h-full p-2">
-      <div class="border-b border-zinc-800 pb-1 mb-2 text-zinc-500 text-xs">
-        Console
-      </div>
+      <div class="border-b border-zinc-800 pb-1 mb-2 text-zinc-500 text-xs">Console</div>
       <pre class="flex-1 overflow-auto text-sm leading-relaxed whitespace-pre-wrap break-all">
         {lines.map((line, i) => (
           <div key={i}>{line}</div>

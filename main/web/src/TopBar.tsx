@@ -14,9 +14,13 @@ function formatUptime(seconds: number): string {
 }
 
 const RADIO_CHIP: Record<RadioStatus, { label: string; cls: string; clickable: boolean }> = {
-  ok:             { label: "Radio OK",         cls: "text-green-400 border-green-900", clickable: false },
-  error:          { label: "Radio error",      cls: "text-red-400 border-red-900",     clickable: false },
-  not_configured: { label: "Radio not set up", cls: "text-red-400 border-red-900",     clickable: true  },
+  ok: { label: "Radio OK", cls: "text-green-400 border-green-900", clickable: false },
+  error: { label: "Radio error", cls: "text-red-400 border-red-900", clickable: false },
+  not_configured: {
+    label: "Radio not set up",
+    cls: "text-red-400 border-red-900",
+    clickable: true,
+  },
 };
 
 interface TopBarProps {
@@ -28,14 +32,19 @@ interface TopBarProps {
   onOpenWifiModal: () => void;
 }
 
-export function TopBar({ status, connected, connecting, radioStatus, onGoToSettings, onOpenWifiModal }: TopBarProps) {
+export function TopBar({
+  status,
+  connected,
+  connecting,
+  radioStatus,
+  onGoToSettings,
+  onOpenWifiModal,
+}: TopBarProps) {
   const radioChip = radioStatus ? RADIO_CHIP[radioStatus] : null;
 
   const uptimeStr = status ? formatUptime(status.uptime) : null;
   const timeStr =
-    status && status.time > 0
-      ? new Date(status.time * 1000).toLocaleTimeString()
-      : null;
+    status && status.time > 0 ? new Date(status.time * 1000).toLocaleTimeString() : null;
 
   return (
     <div class="flex items-center px-3 py-2.5 border-b border-zinc-800 shrink-0 gap-2">
@@ -58,8 +67,8 @@ export function TopBar({ status, connected, connecting, radioStatus, onGoToSetti
       )}
 
       {/* Radio status — not_configured is red and clickable */}
-      {radioChip && (
-        radioChip.clickable ? (
+      {radioChip &&
+        (radioChip.clickable ? (
           <ChipButton
             class={radioChip.cls}
             onClick={onGoToSettings}
@@ -73,8 +82,7 @@ export function TopBar({ status, connected, connecting, radioStatus, onGoToSetti
             <Radio size={13} class="shrink-0" />
             {radioChip.label}
           </Chip>
-        )
-      )}
+        ))}
 
       {/* WiFi */}
       {status && status.wifi_mode === "ap" && (
@@ -87,16 +95,19 @@ export function TopBar({ status, connected, connecting, radioStatus, onGoToSetti
           AP: UNI-GTW
         </ChipButton>
       )}
-      {status && status.wifi_mode === "sta" && status.wifi_rssi !== null && (() => {
-        const WifiIcon = rssiToWifiIcon(status.wifi_rssi);
-        return (
-          <Chip class="text-green-400 border-green-900">
-            <WifiIcon size={13} class="shrink-0" />
-            {status.wifi_ssid && <span>{status.wifi_ssid}</span>}
-            <span>{status.wifi_rssi} dBm</span>
-          </Chip>
-        );
-      })()}
+      {status &&
+        status.wifi_mode === "sta" &&
+        status.wifi_rssi !== null &&
+        (() => {
+          const WifiIcon = rssiToWifiIcon(status.wifi_rssi);
+          return (
+            <Chip class="text-green-400 border-green-900">
+              <WifiIcon size={13} class="shrink-0" />
+              {status.wifi_ssid && <span>{status.wifi_ssid}</span>}
+              <span>{status.wifi_rssi} dBm</span>
+            </Chip>
+          );
+        })()}
 
       {/* WebSocket connection */}
       <Chip
@@ -104,18 +115,14 @@ export function TopBar({ status, connected, connecting, radioStatus, onGoToSetti
           connected
             ? "text-green-400 border-green-900"
             : connecting
-            ? "text-amber-400 border-amber-900"
-            : "text-red-400 border-red-900"
+              ? "text-amber-400 border-amber-900"
+              : "text-red-400 border-red-900"
         }
         title={
-          connected ? "WebSocket connected" :
-          connecting ? "Connecting…" :
-          "WebSocket disconnected"
+          connected ? "WebSocket connected" : connecting ? "Connecting…" : "WebSocket disconnected"
         }
       >
-        {connected
-          ? <Plug size={13} class="shrink-0" />
-          : <Unplug size={13} class="shrink-0" />}
+        {connected ? <Plug size={13} class="shrink-0" /> : <Unplug size={13} class="shrink-0" />}
         {connected ? "Connected" : connecting ? "Connecting…" : "Disconnected"}
       </Chip>
     </div>

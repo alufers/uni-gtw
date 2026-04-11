@@ -9,7 +9,7 @@ import { WifiModal } from "./WifiModal";
 import { WsMessage, StatusPayload, ScanEntry, RadioStatus } from "./wsTypes";
 
 const TABS = [
-  { id: "control",  label: "Control"  },
+  { id: "control", label: "Control" },
   { id: "settings", label: "Settings" },
 ];
 
@@ -73,10 +73,7 @@ export function App() {
   useEffect(() => {
     if (readyState !== ReadyState.OPEN) return;
     const interval = setInterval(() => {
-      if (
-        lastStatusTimeRef.current > 0 &&
-        Date.now() - lastStatusTimeRef.current > 20_000
-      ) {
+      if (lastStatusTimeRef.current > 0 && Date.now() - lastStatusTimeRef.current > 20_000) {
         forceReconnect();
       }
     }, 5000);
