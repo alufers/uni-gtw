@@ -102,6 +102,36 @@ void test_bad_packet(void)
     TEST_ASSERT_EQUAL(ESP_FAIL, cosmo_decode(&raw, &pkt));
 }
 
+/* ── Test: roundtrip DOWN 2-way ─────────────────────────────────────────────
+ * RADIO: TX x4  proto=PROTO_COSMO_2WAY cmd=COSMO_BTN_DOWN(4)
+ *        serial=0x552E2804 counter=2 rssi=0 dBm extra=0x00
+ *
+ * The original serial 0x552E2804 had the lower 5 bits set (0x04); those bits
+ * are not stored in the packet (27-bit serial, bits 31–5 only).  The corrected
+ * value 0x552E2800 is used here so encode → decode round-trips cleanly.
+ */
+void test_down_2way_roundtrip(void)
+{
+    cosmo_packet_t orig = {
+        .proto         = PROTO_COSMO_2WAY,
+        .cmd           = COSMO_BTN_DOWN,
+        .counter       = 2,
+        .serial        = 0x552E2800,   /* 0x552E2804 with lower 5 bits zeroed */
+        .extra_payload = 0x00,
+    };
+
+    cosmo_raw_packet_t raw;
+    TEST_ASSERT_EQUAL(ESP_OK, cosmo_encode(&orig, &raw));
+
+    cosmo_packet_t decoded;
+    TEST_ASSERT_EQUAL(ESP_OK, cosmo_decode(&raw, &decoded));
+    TEST_ASSERT_EQUAL(orig.proto,                decoded.proto);
+    TEST_ASSERT_EQUAL(orig.cmd,                  decoded.cmd);
+    TEST_ASSERT_EQUAL_UINT32(orig.serial,        decoded.serial);
+    TEST_ASSERT_EQUAL_UINT16(orig.counter,       decoded.counter);
+    TEST_ASSERT_EQUAL_UINT8(orig.extra_payload,  decoded.extra_payload);
+}
+
 /* ── Test: cmd name lookup ──────────────────────────────────────────────── */
 void test_cmd_name(void)
 {
@@ -123,6 +153,7 @@ int main(void)
     RUN_TEST(test_stop_up_2way);
     RUN_TEST(test_request_feedback_encode);
     RUN_TEST(test_bad_packet);
+    RUN_TEST(test_down_2way_roundtrip);
     RUN_TEST(test_cmd_name);
     return UNITY_END();
 }

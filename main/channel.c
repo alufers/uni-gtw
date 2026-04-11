@@ -13,6 +13,7 @@
 #include "esp_random.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "freertos/timers.h"
 #include "cJSON.h"
 
 static const char *TAG = "channel";
@@ -22,6 +23,13 @@ static const char *TAG = "channel";
 static cosmo_channel_t   s_channels[CHANNEL_MAX_COUNT];
 static int               s_channel_count = 0;
 static SemaphoreHandle_t s_mutex;
+
+typedef struct {
+    uint32_t      serial;   /* 0 = slot unused */
+    TimerHandle_t timer;
+} feedback_timer_slot_t;
+
+static feedback_timer_slot_t s_feedback_timers[CHANNEL_MAX_COUNT];
 
 /* Mark channels dirty — caller must hold s_mutex */
 static void channel_mark_dirty(void)
@@ -49,7 +57,7 @@ static const char *channel_state_name(cosmo_channel_state_t state)
     }
 }
 
-static cJSON *channel_to_cjson(const cosmo_channel_t *ch)
+cJSON *channel_to_cjson(const cosmo_channel_t *ch)
 {
     cJSON *obj = cJSON_CreateObject();
     cJSON_AddNumberToObject(obj, "serial",       (double)(uint32_t)ch->serial);
@@ -63,8 +71,11 @@ static cJSON *channel_to_cjson(const cosmo_channel_t *ch)
         cJSON_AddNumberToObject(obj, "position", (double)ch->position);
     else
         cJSON_AddNullToObject(obj, "position");
-    cJSON_AddBoolToObject(obj, "reports_tilt_support", ch->reports_tilt_support);
-    cJSON_AddBoolToObject(obj, "force_tilt_support",   ch->force_tilt_support);
+    cJSON_AddBoolToObject(obj, "reports_tilt_support",  ch->reports_tilt_support);
+    cJSON_AddBoolToObject(obj, "force_tilt_support",    ch->force_tilt_support);
+    cJSON_AddBoolToObject(obj, "bidirectional_feedback", ch->bidirectional_feedback);
+    cJSON_AddNumberToObject(obj, "feedback_timeout_s",  (double)ch->feedback_timeout_s);
+    cJSON_AddBoolToObject(obj, "is_state_optimistic",   ch->is_state_optimistic);
     return obj;
 }
 
@@ -73,34 +84,23 @@ static cJSON *channel_to_cjson(const cosmo_channel_t *ch)
 /* Caller must hold s_mutex. */
 static cosmo_channel_t *channel_find_locked(uint32_t serial)
 {
-
     for (int i = 0; i < s_channel_count; i++)
         if (s_channels[i].serial == serial)
             return &s_channels[i];
     return NULL;
 }
 
-/* Optimistic state for TX: only UP and DOWN change the displayed state. */
-static cosmo_channel_state_t tx_optimistic_state(cosmo_cmd_t cmd, cosmo_channel_state_t current)
-{
-    switch (cmd) {
-    case COSMO_BTN_UP:   return CHANNEL_STATE_OPENING;
-    case COSMO_BTN_DOWN: return CHANNEL_STATE_CLOSING;
-    default:             return current;
-    }
-}
-
 /* State from received feedback packets only. */
 static cosmo_channel_state_t rx_feedback_state(cosmo_cmd_t cmd, cosmo_channel_state_t current)
 {
     switch (cmd) {
-    case COSMO_BTN_FEEDBACK_TOP:             return CHANNEL_STATE_OPEN;
-    case COSMO_BTN_FEEDBACK_BOTTOM:          return CHANNEL_STATE_CLOSED;
-    case COSMO_BTN_FEEDBACK_COMFORT:         return CHANNEL_STATE_COMFORT;
-    case COSMO_BTN_FEEDBACK_PARTIAL:         return CHANNEL_STATE_PARTIALLY_OPEN;
-    case COSMO_BTN_FEEDBACK_OBSTRUCTION:     return CHANNEL_STATE_OBSTRUCTION;
-    case COSMO_BTN_FEEDBACK_IN_MOTION:       return CHANNEL_STATE_IN_MOTION;
-    default:                                 return current;
+    case COSMO_BTN_FEEDBACK_TOP:         return CHANNEL_STATE_OPEN;
+    case COSMO_BTN_FEEDBACK_BOTTOM:      return CHANNEL_STATE_CLOSED;
+    case COSMO_BTN_FEEDBACK_COMFORT:     return CHANNEL_STATE_COMFORT;
+    case COSMO_BTN_FEEDBACK_PARTIAL:     return CHANNEL_STATE_PARTIALLY_OPEN;
+    case COSMO_BTN_FEEDBACK_OBSTRUCTION: return CHANNEL_STATE_OBSTRUCTION;
+    case COSMO_BTN_FEEDBACK_IN_MOTION:   return CHANNEL_STATE_IN_MOTION;
+    default:                             return current;
     }
 }
 
@@ -114,12 +114,98 @@ static void broadcast_channel_update(const cosmo_channel_t *ch)
     if (json) { webserver_ws_broadcast_json(json); free(json); }
 }
 
+/* ── Feedback timer ──────────────────────────────────────────────────────── */
+
+static void feedback_timer_cb(TimerHandle_t t)
+{
+    uint32_t serial = (uint32_t)(uintptr_t)pvTimerGetTimerID(t);
+
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    cosmo_channel_t *ch = channel_find_locked(serial);
+    if (!ch) { xSemaphoreGive(s_mutex); return; }
+
+    if (ch->state == CHANNEL_STATE_OPENING  ||
+        ch->state == CHANNEL_STATE_CLOSING  ||
+        ch->state == CHANNEL_STATE_IN_MOTION) {
+        ch->state = CHANNEL_STATE_PARTIALLY_OPEN;
+    }
+    ch->is_state_optimistic = false;
+
+    cosmo_channel_t copy = *ch;
+    xSemaphoreGive(s_mutex);
+
+    ESP_LOGI(TAG, "Feedback timer expired for serial=0x%08X, state→partially_open", (unsigned)serial);
+    broadcast_channel_update(&copy);
+}
+
+/* Find the timer slot for a given serial (any slot), or the first unused slot. */
+static feedback_timer_slot_t *feedback_timer_find_slot(uint32_t serial)
+{
+    feedback_timer_slot_t *empty = NULL;
+    for (int i = 0; i < CHANNEL_MAX_COUNT; i++) {
+        if (s_feedback_timers[i].serial == serial && serial != 0)
+            return &s_feedback_timers[i];
+        if (!empty && s_feedback_timers[i].serial == 0)
+            empty = &s_feedback_timers[i];
+    }
+    return empty; /* return first empty slot if serial not found */
+}
+
+/* Start/restart the feedback guard timer for a channel. */
+static void feedback_timer_arm(uint32_t serial, uint16_t timeout_s)
+{
+    if (timeout_s == 0) return;
+    feedback_timer_slot_t *slot = feedback_timer_find_slot(serial);
+    if (!slot) return;
+
+    TickType_t ticks = pdMS_TO_TICKS((uint32_t)timeout_s * 1000u);
+    if (slot->timer == NULL) {
+        slot->serial = serial;
+        slot->timer  = xTimerCreate("fb_tmr", ticks, pdFALSE,
+                                    (void *)(uintptr_t)serial,
+                                    feedback_timer_cb);
+        if (slot->timer)
+            xTimerStart(slot->timer, 0);
+    } else {
+        /* xTimerChangePeriod also restarts the timer */
+        xTimerChangePeriod(slot->timer, ticks, 0);
+    }
+}
+
+/* Stop the timer without deleting it. */
+static void feedback_timer_cancel(uint32_t serial)
+{
+    for (int i = 0; i < CHANNEL_MAX_COUNT; i++) {
+        if (s_feedback_timers[i].serial == serial && s_feedback_timers[i].timer) {
+            xTimerStop(s_feedback_timers[i].timer, 0);
+            return;
+        }
+    }
+}
+
+/* Stop and delete the timer; clear the slot. */
+static void feedback_timer_destroy(uint32_t serial)
+{
+    for (int i = 0; i < CHANNEL_MAX_COUNT; i++) {
+        if (s_feedback_timers[i].serial == serial) {
+            if (s_feedback_timers[i].timer) {
+                xTimerStop(s_feedback_timers[i].timer, 0);
+                xTimerDelete(s_feedback_timers[i].timer, 0);
+            }
+            s_feedback_timers[i].serial = 0;
+            s_feedback_timers[i].timer  = NULL;
+            return;
+        }
+    }
+}
+
 /* ── Public API ──────────────────────────────────────────────────────────── */
 
 void channel_init(void)
 {
     s_mutex = xSemaphoreCreateMutex();
     s_channel_count = 0;
+    memset(s_feedback_timers, 0, sizeof(s_feedback_timers));
     config_load_channels(s_channels, &s_channel_count);
 }
 
@@ -135,13 +221,15 @@ esp_err_t channel_create(const char *name, cosmo_proto_t proto)
 
     /* Generate a serial number unique within the current channel list */
     uint32_t serial;
-    serial &= ~0x1F; // last 5 significant bits are always zero
     do {
         serial = esp_random();
+        serial &= ~0x1F; // last 5 significant bits are always zero
     } while (channel_find_locked(serial) != NULL);
 
     cosmo_channel_t *ch = &s_channels[s_channel_count++];
     memset(ch, 0, sizeof(*ch));
+    ch->bidirectional_feedback = true;
+    ch->feedback_timeout_s     = 120;
     snprintf(ch->name, sizeof(ch->name), "%s", name ? name : "Unnamed");
     ch->proto    = proto;
     ch->serial   = serial;
@@ -178,6 +266,8 @@ esp_err_t channel_delete(uint32_t serial)
     channel_mark_dirty();
     xSemaphoreGive(s_mutex);
 
+    feedback_timer_destroy(serial);
+
     ESP_LOGI(TAG, "Deleted channel serial=0x%08X", (unsigned)serial);
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "cmd", "channel_deleted");
@@ -190,7 +280,7 @@ esp_err_t channel_delete(uint32_t serial)
     return ESP_OK;
 }
 
-esp_err_t channel_update(uint32_t serial, const char *name, cosmo_proto_t proto, bool force_tilt_support)
+esp_err_t channel_update(uint32_t serial, const cosmo_channel_settings_t *s)
 {
     xSemaphoreTake(s_mutex, portMAX_DELAY);
     cosmo_channel_t *ch = channel_find_locked(serial);
@@ -198,19 +288,23 @@ esp_err_t channel_update(uint32_t serial, const char *name, cosmo_proto_t proto,
         xSemaphoreGive(s_mutex);
         return ESP_ERR_NOT_FOUND;
     }
-    if (name && name[0])
-        snprintf(ch->name, sizeof(ch->name), "%s", name);
-    ch->proto             = proto;
-    ch->force_tilt_support = force_tilt_support;
+    if (s->name[0])
+        snprintf(ch->name, sizeof(ch->name), "%s", s->name);
+    ch->proto                  = s->proto;
+    ch->force_tilt_support     = s->force_tilt_support;
+    ch->bidirectional_feedback = s->bidirectional_feedback;
+    ch->feedback_timeout_s     = s->feedback_timeout_s;
 
     cosmo_channel_t copy = *ch;
     channel_mark_dirty();
     xSemaphoreGive(s_mutex);
 
-    ESP_LOGI(TAG, "Updated channel serial=0x%08X name=\"%s\" proto=%s force_tilt=%d",
+    ESP_LOGI(TAG, "Updated channel serial=0x%08X name=\"%s\" proto=%s force_tilt=%d bidir=%d timeout=%u",
              (unsigned)copy.serial, copy.name,
              (copy.proto == PROTO_COSMO_2WAY) ? "2way" : "1way",
-             (int)copy.force_tilt_support);
+             (int)copy.force_tilt_support,
+             (int)copy.bidirectional_feedback,
+             (unsigned)copy.feedback_timeout_s);
     broadcast_channel_update(&copy);
     return ESP_OK;
 }
@@ -224,9 +318,26 @@ void channel_update_from_packet(const cosmo_packet_t *pkt)
         return; /* unknown serial — ignore */
     }
 
-    cosmo_channel_state_t new_state = rx_feedback_state(pkt->cmd, ch->state);
-    bool state_changed = (new_state != ch->state);
-    ch->state        = new_state;
+    if (!ch->bidirectional_feedback) {
+        xSemaphoreGive(s_mutex);
+        return; /* 1-way channel — ignore all radio feedback */
+    }
+
+    /* Any real feedback cancels the motion-guard timer */
+    uint32_t ch_serial = ch->serial;
+
+    if (pkt->cmd == COSMO_BTN_FEEDBACK_IN_MOTION &&
+        (ch->state == CHANNEL_STATE_OPENING || ch->state == CHANNEL_STATE_CLOSING)) {
+        /*
+         * We already know the direction; IN_MOTION has less information.
+         * Keep the directional state but acknowledge the device responded.
+         */
+        ch->is_state_optimistic = false;
+    } else {
+        ch->state               = rx_feedback_state(pkt->cmd, ch->state);
+        ch->is_state_optimistic = false;
+    }
+
     ch->rssi         = pkt->rssi;
     ch->last_seen_ts = (int64_t)time(NULL);
 
@@ -238,9 +349,8 @@ void channel_update_from_packet(const cosmo_packet_t *pkt)
     cosmo_channel_t copy = *ch;
     xSemaphoreGive(s_mutex);
 
-    /* Always broadcast on RX (rssi/last_seen_ts changed even if state didn't) */
+    feedback_timer_cancel(ch_serial);
     broadcast_channel_update(&copy);
-    (void)state_changed;
 }
 
 esp_err_t channel_send_cmd(uint32_t serial, cosmo_cmd_t cmd, uint8_t extra_payload)
@@ -253,11 +363,61 @@ esp_err_t channel_send_cmd(uint32_t serial, cosmo_cmd_t cmd, uint8_t extra_paylo
     }
 
     ch->counter++;
-    ch->state = tx_optimistic_state(cmd, ch->state);
+
+    if (ch->bidirectional_feedback) {
+        switch (cmd) {
+        case COSMO_BTN_UP:
+            ch->state = CHANNEL_STATE_OPENING;
+            ch->is_state_optimistic = true;
+            break;
+        case COSMO_BTN_DOWN:
+            ch->state = CHANNEL_STATE_CLOSING;
+            ch->is_state_optimistic = true;
+            break;
+        case COSMO_BTN_STOP:
+            if (ch->state == CHANNEL_STATE_OPENING ||
+                ch->state == CHANNEL_STATE_CLOSING  ||
+                ch->state == CHANNEL_STATE_IN_MOTION) {
+                ch->state = CHANNEL_STATE_PARTIALLY_OPEN;
+            }
+            ch->is_state_optimistic = true;
+            break;
+        default:
+            break;
+        }
+    } else {
+        /* 1-way: jump straight to final state */
+        switch (cmd) {
+        case COSMO_BTN_UP:
+            ch->state = CHANNEL_STATE_OPEN;
+            ch->is_state_optimistic = true;
+            break;
+        case COSMO_BTN_DOWN:
+            ch->state = CHANNEL_STATE_CLOSED;
+            ch->is_state_optimistic = true;
+            break;
+        default:
+            break;
+        }
+    }
+
+    /* Capture serial and timeout for timer use outside the mutex */
+    uint32_t ch_serial    = ch->serial;
+    uint16_t ch_timeout_s = ch->feedback_timeout_s;
+    bool     ch_bidir     = ch->bidirectional_feedback;
 
     cosmo_channel_t copy = *ch;
     channel_mark_dirty();
     xSemaphoreGive(s_mutex);
+
+    /* Manage feedback guard timer (bidirectional channels only) */
+    if (ch_bidir) {
+        if (cmd == COSMO_BTN_UP || cmd == COSMO_BTN_DOWN) {
+            feedback_timer_arm(ch_serial, ch_timeout_s);
+        } else if (cmd == COSMO_BTN_STOP) {
+            feedback_timer_cancel(ch_serial);
+        }
+    }
 
     cosmo_packet_t pkt = {
         .proto         = copy.proto,

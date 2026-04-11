@@ -9,6 +9,7 @@ import {
   Pencil,
   RotateCw,
   RotateCcw,
+  Hourglass,
 } from "lucide-preact";
 import { Button } from "./Button";
 import { Collapsible } from "./Collapsible";
@@ -37,6 +38,9 @@ export interface Channel {
   position: number | null;
   reports_tilt_support: boolean;
   force_tilt_support: boolean;
+  bidirectional_feedback: boolean;
+  feedback_timeout_s: number;
+  is_state_optimistic: boolean;
 }
 
 interface ChannelsProps {
@@ -138,12 +142,6 @@ function ControlGrid({
   sendCmd: (cmd: string, extra?: number) => void;
   hasTilt: boolean;
 }) {
-  /*
-   *  Layout (hasTilt):         Layout (no tilt):
-   *  [   ] [Up  ] [   ]        [   ] [Up  ] [   ]
-   *  [T+ ] [Stop] [T- ]        [   ] [Stop] [   ]
-   *  [   ] [Down] [   ]        [   ] [Down] [   ]
-   */
   const empty = <div class="w-[60px] h-[60px]" />;
   return (
     <div class="grid grid-cols-3 gap-1 w-fit">
@@ -195,7 +193,13 @@ function ControlGrid({
 interface ChannelFormProps {
   /** undefined → create mode; defined → edit mode */
   channel?: Channel;
-  onSubmit: (data: { name: string; proto: "1way" | "2way"; force_tilt_support?: boolean }) => void;
+  onSubmit: (data: {
+    name: string;
+    proto: "1way" | "2way";
+    force_tilt_support?: boolean;
+    bidirectional_feedback?: boolean;
+    feedback_timeout_s?: number;
+  }) => void;
   onCancel: () => void;
 }
 
@@ -204,6 +208,8 @@ function ChannelForm({ channel, onSubmit, onCancel }: ChannelFormProps) {
   const [name, setName] = useState(channel?.name ?? "");
   const [proto, setProto] = useState<"1way" | "2way">(channel?.proto ?? "1way");
   const [forceTilt, setForceTilt] = useState(channel?.force_tilt_support ?? false);
+  const [bidirFeedback, setBidirFeedback] = useState(channel?.bidirectional_feedback ?? true);
+  const [feedbackTimeout, setFeedbackTimeout] = useState(channel?.feedback_timeout_s ?? 120);
 
   const handleSubmit = () => {
     const trimmed = name.trim();
@@ -211,7 +217,11 @@ function ChannelForm({ channel, onSubmit, onCancel }: ChannelFormProps) {
     onSubmit({
       name: trimmed,
       proto,
-      ...(isEdit && { force_tilt_support: forceTilt }),
+      ...(isEdit && {
+        force_tilt_support: forceTilt,
+        bidirectional_feedback: bidirFeedback,
+        feedback_timeout_s: feedbackTimeout,
+      }),
     });
   };
 
@@ -251,6 +261,37 @@ function ChannelForm({ channel, onSubmit, onCancel }: ChannelFormProps) {
           />
           Force tilt support
         </label>
+      )}
+      {isEdit && (
+        <>
+          <label class="flex items-center gap-2 text-xs text-zinc-300 mb-2 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={bidirFeedback}
+              onChange={(e) => setBidirFeedback((e.target as HTMLInputElement).checked)}
+              class="accent-blue-500"
+            />
+            Bidirectional feedback
+          </label>
+          <div class={!bidirFeedback ? "opacity-40 pointer-events-none" : ""}>
+            <label class="block text-zinc-500 text-[10px] uppercase tracking-wide mb-0.5">
+              Feedback timeout (s)
+            </label>
+            <input
+              type="number"
+              min={0}
+              max={3600}
+              disabled={!bidirFeedback}
+              value={feedbackTimeout}
+              onInput={(e) =>
+                setFeedbackTimeout(
+                  Math.min(3600, Math.max(0, parseInt((e.target as HTMLInputElement).value) || 0)),
+                )
+              }
+              class="w-full bg-zinc-800 text-zinc-100 border border-zinc-600 rounded px-2 py-1 text-xs mb-2"
+            />
+          </div>
+        </>
       )}
       <div class="flex gap-1">
         <Button variant="primary" disabled={!name.trim()} onClick={handleSubmit} class="flex-1">
@@ -292,6 +333,8 @@ function ChannelCard({ ch, onSend }: { ch: Channel; onSend: (msg: object) => voi
     name: string;
     proto: "1way" | "2way";
     force_tilt_support?: boolean;
+    bidirectional_feedback?: boolean;
+    feedback_timeout_s?: number;
   }) => {
     onSend({ cmd: "update_channel", serial: ch.serial, ...data });
     setEditing(false);
@@ -304,7 +347,21 @@ function ChannelCard({ ch, onSend }: { ch: Channel; onSend: (msg: object) => voi
       {/* Name + state + action buttons */}
       <div class="flex items-baseline mb-1 gap-1">
         <span class="flex-1 font-bold text-sm truncate">{ch.name}</span>
-        <span class={`text-xs ${STATE_CLASS[ch.state]}`}>{STATE_LABEL[ch.state]}</span>
+        <span class={`text-xs ${STATE_CLASS[ch.state]} flex items-center gap-0.5`}>
+          {STATE_LABEL[ch.state]}
+          {ch.is_state_optimistic && (
+            <span
+              class={`inline-flex items-center text-zinc-400 ${
+                ch.state === "opening" || ch.state === "closing" || ch.state === "in_motion"
+                  ? "hourglass-spinning"
+                  : ""
+              }`}
+              title="Optimistic — awaiting device confirmation"
+            >
+              <Hourglass size={11} />
+            </span>
+          )}
+        </span>
         <Button
           variant="ghost"
           onClick={() => {

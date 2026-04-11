@@ -113,6 +113,14 @@ esp_err_t cosmo_decode(const cosmo_raw_packet_t *raw, cosmo_packet_t *out) {
 esp_err_t cosmo_encode(const cosmo_packet_t *pkt, cosmo_raw_packet_t *out) {
   memset(out, 0, sizeof(*out));
 
+  /* The serial field is 27 bits (bits 31–5 of the uint32); the lower 5 bits
+   * are not stored in the packet and will read back as zero on decode. */
+  if (pkt->serial & 0x1FU) {
+    COSMO_LOG("WARNING: serial 0x%08X has lower 5 bits set (0x%02X); "
+              "they are not transmitted and will be lost on decode",
+              (unsigned)pkt->serial, (unsigned)(pkt->serial & 0x1FU));
+  }
+
   /* Serial upper 3 bytes */
   out->data[4] = (pkt->serial >> 24) & 0xFF;
   out->data[5] = (pkt->serial >> 16) & 0xFF;

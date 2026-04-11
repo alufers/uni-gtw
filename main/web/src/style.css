@@ -6,3 +6,27 @@ body,
   height: 100%;
   width: 100%;
 }
+
+/* Hourglass flip animation — rotates 180° every 5 s (two flips per 10 s cycle) */
+@keyframes hourglass-flip {
+  0% {
+    transform: rotate(0deg);
+  }
+  10% {
+    transform: rotate(180deg);
+  }
+  50% {
+    transform: rotate(180deg);
+  }
+  60% {
+    transform: rotate(360deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+.hourglass-spinning {
+  animation: hourglass-flip 10s linear infinite;
+  transform-origin: center;
+}

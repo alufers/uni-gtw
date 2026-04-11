@@ -70,15 +70,8 @@ static void do_save(void)
     cJSON_AddItemToObject(root, "radio", radio_j);
 
     cJSON *arr = cJSON_CreateArray();
-    for (int i = 0; i < count; i++) {
-        cJSON *ch = cJSON_CreateObject();
-        cJSON_AddStringToObject(ch, "name",                snap[i].name);
-        cJSON_AddStringToObject(ch, "proto",               snap[i].proto == PROTO_COSMO_2WAY ? "2way" : "1way");
-        cJSON_AddNumberToObject(ch, "serial",              (double)(uint32_t)snap[i].serial);
-        cJSON_AddNumberToObject(ch, "counter",             (double)snap[i].counter);
-        cJSON_AddBoolToObject  (ch, "force_tilt_support",  snap[i].force_tilt_support);
-        cJSON_AddItemToArray(arr, ch);
-    }
+    for (int i = 0; i < count; i++)
+        cJSON_AddItemToArray(arr, channel_to_cjson(&snap[i]));
     cJSON_AddItemToObject(root, "channels", arr);
 
     char *str = cJSON_PrintUnformatted(root);
@@ -188,6 +181,16 @@ static void do_load(void)
             ch->position          = -1;
             cJSON *fts_j          = cJSON_GetObjectItem(item, "force_tilt_support");
             ch->force_tilt_support = cJSON_IsTrue(fts_j);
+
+            cJSON *bf_j = cJSON_GetObjectItem(item, "bidirectional_feedback");
+            ch->bidirectional_feedback = cJSON_IsBool(bf_j) ? cJSON_IsTrue(bf_j) : true;
+
+            cJSON *ft_j = cJSON_GetObjectItem(item, "feedback_timeout_s");
+            ch->feedback_timeout_s = cJSON_IsNumber(ft_j)
+                ? (uint16_t)cJSON_GetNumberValue(ft_j) : 120;
+
+            /* is_state_optimistic is runtime-only — always false after a load */
+            ch->is_state_optimistic = false;
         }
     }
     s_channel_count = count;

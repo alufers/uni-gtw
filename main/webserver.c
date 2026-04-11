@@ -356,13 +356,23 @@ static void ws_dispatch(int fd, const char *text)
 
         const char *name      = cJSON_GetStringValue(cJSON_GetObjectItem(root, "name"));
         const char *proto_str = cJSON_GetStringValue(cJSON_GetObjectItem(root, "proto"));
-        cosmo_proto_t proto = (proto_str && strcmp(proto_str, "2way") == 0)
-                              ? PROTO_COSMO_2WAY : PROTO_COSMO_1WAY;
 
         cJSON *fts_j = cJSON_GetObjectItem(root, "force_tilt_support");
-        bool force_tilt = cJSON_IsTrue(fts_j);
+        cJSON *bf_j  = cJSON_GetObjectItem(root, "bidirectional_feedback");
+        cJSON *ft_j  = cJSON_GetObjectItem(root, "feedback_timeout_s");
 
-        channel_update(serial, name, proto, force_tilt);
+        cosmo_channel_settings_t s = {
+            .proto                  = (proto_str && strcmp(proto_str, "2way") == 0)
+                                      ? PROTO_COSMO_2WAY : PROTO_COSMO_1WAY,
+            .force_tilt_support     = cJSON_IsTrue(fts_j),
+            .bidirectional_feedback = cJSON_IsBool(bf_j) ? cJSON_IsTrue(bf_j) : true,
+            .feedback_timeout_s     = cJSON_IsNumber(ft_j)
+                                      ? (uint16_t)cJSON_GetNumberValue(ft_j) : 120,
+        };
+        if (name && name[0])
+            snprintf(s.name, sizeof(s.name), "%s", name);
+
+        channel_update(serial, &s);
 
     } else if (strcmp(cmd, "wifi_scan") == 0) {
         scan_task_arg_t *a = malloc(sizeof(*a));
