@@ -8,17 +8,17 @@ import {
   SignalMedium,
   SignalLow,
   SignalZero,
+  type LucideIcon,
 } from "lucide-preact";
-import { ComponentType } from "preact";
 
-export function rssiToWifiIcon(rssi: number): ComponentType<{ size?: number; class?: string }> {
+export function rssiToWifiIcon(rssi: number): LucideIcon {
   if (rssi >= -60) return Wifi;
   if (rssi >= -70) return WifiHigh;
   if (rssi >= -80) return WifiLow;
   return WifiZero;
 }
 
-export function rssiToSignalIcon(rssi: number): ComponentType<{ size?: number; class?: string }> {
+export function rssiToSignalIcon(rssi: number): LucideIcon {
   if (rssi >= -60) return Signal;
   if (rssi >= -70) return SignalHigh;
   if (rssi >= -80) return SignalMedium;

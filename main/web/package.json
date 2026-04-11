@@ -2,7 +2,8 @@
   "type": "module",
   "scripts": {
     "build": "vite build",
-    "dev": "vite"
+    "dev": "vite",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "lucide-preact": "^1.8.0",
@@ -12,6 +13,7 @@
     "@preact/preset-vite": "^2.10.0",
     "@tailwindcss/vite": "^4.0.0",
     "tailwindcss": "^4.0.0",
+    "typescript": "^6.0.2",
     "vite": "^6.0.0"
   }
 }

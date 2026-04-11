@@ -120,9 +120,9 @@ function ControlButton({
       title={title}
       class={`
         w-[60px] h-[60px] flex items-center justify-center rounded cursor-pointer border-0 text-zinc-100
-        ${variant === "primary"   ? "bg-blue-900 hover:bg-blue-800"  : ""}
-        ${variant === "secondary" ? "bg-zinc-700 hover:bg-zinc-600"  : ""}
-        ${variant === "danger"    ? "bg-red-900  hover:bg-red-800"   : ""}
+        ${variant === "primary" ? "bg-blue-900 hover:bg-blue-800" : ""}
+        ${variant === "secondary" ? "bg-zinc-700 hover:bg-zinc-600" : ""}
+        ${variant === "danger" ? "bg-red-900  hover:bg-red-800" : ""}
       `}
     >
       {children}
@@ -132,11 +132,9 @@ function ControlButton({
 
 /* ── 3×3 Control Grid ── */
 function ControlGrid({
-  ch,
   sendCmd,
   hasTilt,
 }: {
-  ch: Channel;
   sendCmd: (cmd: string, extra?: number) => void;
   hasTilt: boolean;
 }) {
@@ -158,22 +156,42 @@ function ControlGrid({
 
       {/* row 1 */}
       {hasTilt ? (
-        <ControlButton onClick={() => sendCmd("TILT_INCREASE")} title="Tilt increase" variant="secondary">
+        <ControlButton
+          onClick={() => sendCmd("TILT_INCREASE")}
+          title="Tilt increase"
+          variant="secondary"
+        >
           <RotateCw size={22} />
         </ControlButton>
-      ) : empty}
-      <ControlButton onClick={() => sendCmd("STOP")} title="Stop" variant="secondary">
+      ) : (
+        empty
+      )}
+      <ControlButton
+        onClick={() => sendCmd("STOP")}
+        title="Stop"
+        variant="secondary"
+      >
         <Square size={22} />
       </ControlButton>
       {hasTilt ? (
-        <ControlButton onClick={() => sendCmd("TILT_DECREASE")} title="Tilt decrease" variant="secondary">
+        <ControlButton
+          onClick={() => sendCmd("TILT_DECREASE")}
+          title="Tilt decrease"
+          variant="secondary"
+        >
           <RotateCcw size={22} />
         </ControlButton>
-      ) : empty}
+      ) : (
+        empty
+      )}
 
       {/* row 2 */}
       {empty}
-      <ControlButton onClick={() => sendCmd("DOWN")} title="Down" variant="danger">
+      <ControlButton
+        onClick={() => sendCmd("DOWN")}
+        title="Down"
+        variant="danger"
+      >
         <ChevronDown size={28} />
       </ControlButton>
       {empty}
@@ -185,7 +203,11 @@ function ControlGrid({
 interface ChannelFormProps {
   /** undefined → create mode; defined → edit mode */
   channel?: Channel;
-  onSubmit: (data: { name: string; proto: "1way" | "2way"; force_tilt_support?: boolean }) => void;
+  onSubmit: (data: {
+    name: string;
+    proto: "1way" | "2way";
+    force_tilt_support?: boolean;
+  }) => void;
   onCancel: () => void;
 }
 
@@ -193,7 +215,9 @@ function ChannelForm({ channel, onSubmit, onCancel }: ChannelFormProps) {
   const isEdit = channel !== undefined;
   const [name, setName] = useState(channel?.name ?? "");
   const [proto, setProto] = useState<"1way" | "2way">(channel?.proto ?? "1way");
-  const [forceTilt, setForceTilt] = useState(channel?.force_tilt_support ?? false);
+  const [forceTilt, setForceTilt] = useState(
+    channel?.force_tilt_support ?? false,
+  );
 
   const handleSubmit = () => {
     const trimmed = name.trim();
@@ -210,7 +234,9 @@ function ChannelForm({ channel, onSubmit, onCancel }: ChannelFormProps) {
       <p class="text-zinc-400 text-xs font-semibold mb-2">
         {isEdit ? `Edit: ${channel!.name}` : "New Channel"}
       </p>
-      <label class="block text-zinc-500 text-[10px] uppercase tracking-wide mb-0.5">Channel name</label>
+      <label class="block text-zinc-500 text-[10px] uppercase tracking-wide mb-0.5">
+        Channel name
+      </label>
       <input
         type="text"
         placeholder="Channel name"
@@ -220,10 +246,14 @@ function ChannelForm({ channel, onSubmit, onCancel }: ChannelFormProps) {
         onKeyDown={(e) => e.key === "Enter" && handleSubmit()}
         class="w-full bg-zinc-800 text-zinc-100 border border-zinc-600 rounded px-2 py-1 text-xs mb-2 font-mono"
       />
-      <label class="block text-zinc-500 text-[10px] uppercase tracking-wide mb-0.5">Protocol</label>
+      <label class="block text-zinc-500 text-[10px] uppercase tracking-wide mb-0.5">
+        Protocol
+      </label>
       <select
         value={proto}
-        onChange={(e) => setProto((e.target as HTMLSelectElement).value as "1way" | "2way")}
+        onChange={(e) =>
+          setProto((e.target as HTMLSelectElement).value as "1way" | "2way")
+        }
         class="w-full bg-zinc-800 text-zinc-100 border border-zinc-600 rounded px-2 py-1 text-xs mb-2"
       >
         <option value="1way">COSMO</option>
@@ -234,7 +264,9 @@ function ChannelForm({ channel, onSubmit, onCancel }: ChannelFormProps) {
           <input
             type="checkbox"
             checked={forceTilt}
-            onChange={(e) => setForceTilt((e.target as HTMLInputElement).checked)}
+            onChange={(e) =>
+              setForceTilt((e.target as HTMLInputElement).checked)
+            }
             class="accent-blue-500"
           />
           Force tilt support
@@ -268,7 +300,7 @@ function ChannelCard({
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [editing, setEditing] = useState(false);
   const [payloadValues, setPayloadValues] = useState<Record<string, number>>(
-    () => Object.fromEntries(PAYLOAD_CMDS.map((c) => [c.value, 0]))
+    () => Object.fromEntries(PAYLOAD_CMDS.map((c) => [c.value, 0])),
   );
 
   const sendCmd = (cmd_name: string, extra_payload?: number) =>
@@ -287,12 +319,17 @@ function ChannelCard({
     onSend({ cmd: "delete_channel", serial: ch.serial });
   };
 
-  const handleEdit = (data: { name: string; proto: "1way" | "2way"; force_tilt_support?: boolean }) => {
+  const handleEdit = (data: {
+    name: string;
+    proto: "1way" | "2way";
+    force_tilt_support?: boolean;
+  }) => {
     onSend({ cmd: "update_channel", serial: ch.serial, ...data });
     setEditing(false);
   };
 
-  const hasTilt = ch.proto === "2way" && (ch.reports_tilt_support || ch.force_tilt_support);
+  const hasTilt =
+    ch.proto === "2way" && (ch.reports_tilt_support || ch.force_tilt_support);
 
   return (
     <div class="bg-zinc-900 rounded border border-zinc-800 p-2 mb-2">
@@ -304,7 +341,10 @@ function ChannelCard({
         </span>
         <Button
           variant="ghost"
-          onClick={() => { setEditing((v) => !v); setConfirmDelete(false); }}
+          onClick={() => {
+            setEditing((v) => !v);
+            setConfirmDelete(false);
+          }}
           class="px-1 py-0 text-xs leading-4 shrink-0"
           title="Edit channel"
         >
@@ -323,7 +363,11 @@ function ChannelCard({
 
       {/* Edit form */}
       {editing && (
-        <ChannelForm channel={ch} onSubmit={handleEdit} onCancel={() => setEditing(false)} />
+        <ChannelForm
+          channel={ch}
+          onSubmit={handleEdit}
+          onCancel={() => setEditing(false)}
+        />
       )}
 
       {/* Meta */}
@@ -331,23 +375,26 @@ function ChannelCard({
         <span>{ch.proto === "2way" ? "COSMO 2WAY" : "COSMO"}</span>
         <span>CNT: {ch.counter}</span>
         <span>0x{ch.serial.toString(16).toUpperCase().padStart(8, "0")}</span>
-        {ch.last_seen_ts > 0 && (() => {
-          const SignalIcon = rssiToSignalIcon(ch.rssi);
-          return (
-            <span class="text-zinc-400 flex items-center gap-1">
-              <SignalIcon size={12} />
-              {ch.rssi} dBm · {formatLastSeen(ch.last_seen_ts)}
-            </span>
-          );
-        })()}
-        {ch.proto === "2way" && ch.position !== null && ch.position !== undefined && (
-          <span class="text-lime-400 font-bold">{ch.position}%</span>
-        )}
+        {ch.last_seen_ts > 0 &&
+          (() => {
+            const SignalIcon = rssiToSignalIcon(ch.rssi);
+            return (
+              <span class="text-zinc-400 flex items-center gap-1">
+                <SignalIcon size={12} />
+                {ch.rssi} dBm · {formatLastSeen(ch.last_seen_ts)}
+              </span>
+            );
+          })()}
+        {ch.proto === "2way" &&
+          ch.position !== null &&
+          ch.position !== undefined && (
+            <span class="text-lime-400 font-bold">{ch.position}%</span>
+          )}
       </div>
 
       {/* Main controls — 3×3 grid */}
       <div class="flex justify-center mb-1">
-        <ControlGrid ch={ch} sendCmd={sendCmd} hasTilt={hasTilt} />
+        <ControlGrid sendCmd={sendCmd} hasTilt={hasTilt} />
       </div>
 
       {/* Advanced collapsible */}
@@ -371,42 +418,49 @@ function ChannelCard({
 
         {/* Payload commands — 2-way only; SET_TILT requires tilt support */}
         {ch.proto === "2way" &&
-          PAYLOAD_CMDS.filter((c) => c.value !== "SET_TILT" || hasTilt).map((c) => (
-            <div key={c.value} class="flex gap-1">
-              <Button
-                variant="secondary"
-                onClick={() => sendCmd(c.value, payloadValues[c.value])}
-                class="flex-1"
-              >
-                {c.label}
-              </Button>
-              <input
-                type="number"
-                min={0}
-                max={c.max}
-                value={payloadValues[c.value]}
-                onInput={(e) =>
-                  setPayloadValues((prev) => ({
-                    ...prev,
-                    [c.value]: Math.min(
-                      c.max,
-                      Math.max(
-                        0,
-                        parseInt((e.target as HTMLInputElement).value) || 0
-                      )
-                    ),
-                  }))
-                }
-                class="w-16 bg-zinc-800 text-zinc-100 border border-zinc-600 rounded px-1 py-1 text-xs text-center"
-              />
-            </div>
-          ))}
+          PAYLOAD_CMDS.filter((c) => c.value !== "SET_TILT" || hasTilt).map(
+            (c) => (
+              <div key={c.value} class="flex gap-1">
+                <Button
+                  variant="secondary"
+                  onClick={() => sendCmd(c.value, payloadValues[c.value])}
+                  class="flex-1"
+                >
+                  {c.label}
+                </Button>
+                <input
+                  type="number"
+                  min={0}
+                  max={c.max}
+                  value={payloadValues[c.value]}
+                  onInput={(e) =>
+                    setPayloadValues((prev) => ({
+                      ...prev,
+                      [c.value]: Math.min(
+                        c.max,
+                        Math.max(
+                          0,
+                          parseInt((e.target as HTMLInputElement).value) || 0,
+                        ),
+                      ),
+                    }))
+                  }
+                  class="w-16 bg-zinc-800 text-zinc-100 border border-zinc-600 rounded px-1 py-1 text-xs text-center"
+                />
+              </div>
+            ),
+          )}
       </Collapsible>
     </div>
   );
 }
 
-export function Channels({ channels, onSend, radioStatus, onGoToSettings }: ChannelsProps) {
+export function Channels({
+  channels,
+  onSend,
+  radioStatus,
+  onGoToSettings,
+}: ChannelsProps) {
   const [showForm, setShowForm] = useState(false);
 
   const createChannel = (data: { name: string; proto: "1way" | "2way" }) => {
@@ -423,7 +477,11 @@ export function Channels({ channels, onSend, radioStatus, onGoToSettings }: Chan
           <br />
           Set up the GPIO pins and enable it in Settings.
         </p>
-        <Button variant="primary" onClick={onGoToSettings} class="flex items-center gap-1.5">
+        <Button
+          variant="primary"
+          onClick={onGoToSettings}
+          class="flex items-center gap-1.5"
+        >
           <Settings size={12} /> Open Settings
         </Button>
       </div>
@@ -435,14 +493,20 @@ export function Channels({ channels, onSend, radioStatus, onGoToSettings }: Chan
       {/* Header */}
       <div class="flex items-center border-b border-zinc-800 pb-1 mb-2">
         <span class="text-zinc-500 text-xs flex-1">Channels</span>
-        <Button onClick={() => setShowForm((v) => !v)} class="flex items-center gap-1">
+        <Button
+          onClick={() => setShowForm((v) => !v)}
+          class="flex items-center gap-1"
+        >
           <Plus size={12} /> New
         </Button>
       </div>
 
       {/* New channel form */}
       {showForm && (
-        <ChannelForm onSubmit={createChannel} onCancel={() => setShowForm(false)} />
+        <ChannelForm
+          onSubmit={createChannel}
+          onCancel={() => setShowForm(false)}
+        />
       )}
 
       {/* Empty state */}
