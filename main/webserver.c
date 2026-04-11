@@ -486,62 +486,42 @@ void gtw_console_log(const char *fmt, ...)
 
 /* ── Settings REST handlers ──────────────────────────────────────────────── */
 
-static char *build_settings_json(void)
+/* Flush in-memory config to disk then stream config.json back to the client.
+ * Used by both GET and POST /api/settings — single source of truth. */
+static esp_err_t send_config_file(httpd_req_t *req)
 {
-    gateway_config_t cfg;
-    config_get(&cfg);
+    config_save_now();
 
-    cJSON *root   = cJSON_CreateObject();
-    cJSON_AddStringToObject(root, "hostname", cfg.hostname);
+    FILE *f = fopen("/littlefs/config.json", "r");
+    if (!f) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "config not found");
+        return ESP_OK;
+    }
 
-    cJSON *mqtt_j = cJSON_CreateObject();
-    cJSON_AddBoolToObject  (mqtt_j, "enabled",  cfg.mqtt.enabled);
-    cJSON_AddStringToObject(mqtt_j, "broker",   cfg.mqtt.broker);
-    cJSON_AddNumberToObject(mqtt_j, "port",     cfg.mqtt.port);
-    cJSON_AddStringToObject(mqtt_j, "username", cfg.mqtt.username);
-    cJSON_AddStringToObject(mqtt_j, "password", cfg.mqtt.password);
-    cJSON_AddItemToObject(root, "mqtt", mqtt_j);
-
-    cJSON *radio_j = cJSON_CreateObject();
-    cJSON_AddBoolToObject  (radio_j, "enabled",    cfg.radio.enabled);
-    cJSON_AddNumberToObject(radio_j, "gpio_miso",  cfg.radio.gpio_miso);
-    cJSON_AddNumberToObject(radio_j, "gpio_mosi",  cfg.radio.gpio_mosi);
-    cJSON_AddNumberToObject(radio_j, "gpio_sck",   cfg.radio.gpio_sck);
-    cJSON_AddNumberToObject(radio_j, "gpio_csn",   cfg.radio.gpio_csn);
-    cJSON_AddNumberToObject(radio_j, "gpio_gdo0",  cfg.radio.gpio_gdo0);
-    cJSON_AddNumberToObject(radio_j, "spi_freq_hz",cfg.radio.spi_freq_hz);
-    cJSON_AddItemToObject(root, "radio", radio_j);
-
-    char *json = cJSON_PrintUnformatted(root);
-    cJSON_Delete(root);
-    return json;
+    httpd_resp_set_type(req, "application/json");
+    char buf[512];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), f)) > 0)
+        httpd_resp_send_chunk(req, buf, (ssize_t)n);
+    fclose(f);
+    httpd_resp_send_chunk(req, NULL, 0);
+    return ESP_OK;
 }
 
 static esp_err_t settings_get_handler(httpd_req_t *req)
 {
-    char *json = build_settings_json();
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr(req, json ? json : "{}");
-    free(json);
-    return ESP_OK;
+    return send_config_file(req);
 }
 
-/* Apply settings JSON object (hostname/mqtt/radio).
- * save_only=true  → only persist via config_set_*; skip live hardware apply.
- *                   Use this before a reboot so that radio_apply_config is
- *                   never called from the httpd task context.
- * save_only=false → also apply live (mdns, netif hostname, radio_apply_config). */
-static void apply_settings_from_json(cJSON *root, bool save_only)
+static void apply_settings_from_json(cJSON *root)
 {
     /* Hostname */
     const char *hostname = cJSON_GetStringValue(cJSON_GetObjectItem(root, "hostname"));
     if (hostname && hostname[0]) {
         config_set_hostname(hostname);
-        if (!save_only) {
-            mdns_hostname_set(hostname);
-            esp_netif_t *sta = wifi_manager_get_sta_netif();
-            if (sta) esp_netif_set_hostname(sta, hostname);
-        }
+        mdns_hostname_set(hostname);
+        esp_netif_t *sta = wifi_manager_get_sta_netif();
+        if (sta) esp_netif_set_hostname(sta, hostname);
         ESP_LOGI(TAG, "Hostname updated to: %s", hostname);
     }
 
@@ -594,16 +574,14 @@ static void apply_settings_from_json(cJSON *root, bool save_only)
         config_set_radio(enabled, gpio_miso, gpio_mosi, gpio_sck,
                          gpio_csn, gpio_gdo0, spi_freq_hz);
 
-        if (!save_only) {
-            esp_err_t radio_err = radio_apply_config();
-            if (radio_err == ESP_ERR_NOT_SUPPORTED)
-                g_radio_state = RADIO_STATE_NOT_CONFIGURED;
-            else if (radio_err != ESP_OK)
-                g_radio_state = RADIO_STATE_ERROR;
-            else
-                g_radio_state = RADIO_STATE_OK;
-            ESP_LOGI(TAG, "Radio state after apply: %d", (int)g_radio_state);
-        }
+        esp_err_t radio_err = radio_apply_config();
+        if (radio_err == ESP_ERR_NOT_SUPPORTED)
+            g_radio_state = RADIO_STATE_NOT_CONFIGURED;
+        else if (radio_err != ESP_OK)
+            g_radio_state = RADIO_STATE_ERROR;
+        else
+            g_radio_state = RADIO_STATE_OK;
+        ESP_LOGI(TAG, "Radio state after apply: %d", (int)g_radio_state);
     }
 }
 
@@ -630,42 +608,13 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
         return ESP_OK;
     }
 
-    apply_settings_from_json(root, false);
+    apply_settings_from_json(root);
     cJSON_Delete(root);
 
-    /* Respond with the final saved state */
-    char *json = build_settings_json();
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr(req, json ? json : "{}");
-    free(json);
-    return ESP_OK;
+    return send_config_file(req);
 }
 
-/* ── Backup / Restore ────────────────────────────────────────────────────── */
-
-static esp_err_t backup_get_handler(httpd_req_t *req)
-{
-    /* Ensure the on-disk file is up to date before we serve it */
-    config_save_now();
-
-    FILE *f = fopen("/littlefs/config.json", "r");
-    if (!f) {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "config not found");
-        return ESP_OK;
-    }
-
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_set_hdr(req, "Content-Disposition", "attachment; filename=\"uni-gtw-backup.json\"");
-
-    char buf[512];
-    size_t n;
-    while ((n = fread(buf, 1, sizeof(buf), f)) > 0)
-        httpd_resp_send_chunk(req, buf, (ssize_t)n);
-    fclose(f);
-
-    httpd_resp_send_chunk(req, NULL, 0); /* end chunked response */
-    return ESP_OK;
-}
+/* ── Restore ─────────────────────────────────────────────────────────────── */
 
 static void reboot_task(void *arg)
 {
@@ -680,63 +629,34 @@ static esp_err_t restore_post_handler(httpd_req_t *req)
         return ESP_OK;
     }
 
-    char *buf = malloc((size_t)req->content_len + 1);
-    if (!buf) {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OOM");
-        return ESP_OK;
-    }
-    int received = httpd_req_recv(req, buf, req->content_len);
-    if (received <= 0) { free(buf); return received == 0 ? ESP_OK : ESP_FAIL; }
-    buf[received] = '\0';
-
-    cJSON *root = cJSON_Parse(buf);
-    free(buf);
-    if (!root) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid JSON");
+    /* Write the body directly to the config file — no parsing needed.
+     * The backup IS config.json; it will be loaded as-is on next boot. */
+    FILE *f = fopen("/littlefs/config.json", "w");
+    if (!f) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "write failed");
         return ESP_OK;
     }
 
-    /* Save settings only — no live hardware apply; a reboot will pick them up.
-     * The backup file IS the flat config.json so settings are at the top level. */
-    apply_settings_from_json(root, true);
-
-    /* Restore channels */
-    cJSON *ch_arr = cJSON_GetObjectItem(root, "channels");
-    if (cJSON_IsArray(ch_arr)) {
-        cosmo_channel_t channels[CHANNEL_MAX_COUNT];
-        int count = 0;
-        cJSON *item;
-        cJSON_ArrayForEach(item, ch_arr) {
-            if (count >= CHANNEL_MAX_COUNT) break;
-            const char *name      = cJSON_GetStringValue(cJSON_GetObjectItem(item, "name"));
-            const char *proto_str = cJSON_GetStringValue(cJSON_GetObjectItem(item, "proto"));
-            cJSON *serial_j  = cJSON_GetObjectItem(item, "serial");
-            cJSON *counter_j = cJSON_GetObjectItem(item, "counter");
-            if (!name || !proto_str || !cJSON_IsNumber(serial_j) || !cJSON_IsNumber(counter_j))
-                continue;
-            cosmo_channel_t *ch = &channels[count++];
-            memset(ch, 0, sizeof(*ch));
-            snprintf(ch->name, sizeof(ch->name), "%s", name);
-            ch->proto             = (strcmp(proto_str, "2way") == 0) ? PROTO_COSMO_2WAY : PROTO_COSMO_1WAY;
-            ch->serial            = (uint32_t)cJSON_GetNumberValue(serial_j) & ~0x1Fu;
-            ch->counter           = (uint16_t)cJSON_GetNumberValue(counter_j);
-            ch->state             = CHANNEL_STATE_UNKNOWN;
-            ch->position          = -1;
-            cJSON *fts_j          = cJSON_GetObjectItem(item, "force_tilt_support");
-            ch->force_tilt_support = cJSON_IsTrue(fts_j);
-        }
-        config_save_channels(channels, count);
+    char chunk[256];
+    int remaining = req->content_len;
+    bool write_ok = true;
+    while (remaining > 0) {
+        int to_read = remaining < (int)sizeof(chunk) ? remaining : (int)sizeof(chunk);
+        int got = httpd_req_recv(req, chunk, to_read);
+        if (got <= 0) { write_ok = false; break; }
+        if (fwrite(chunk, 1, (size_t)got, f) != (size_t)got) { write_ok = false; break; }
+        remaining -= got;
     }
+    fclose(f);
 
-    cJSON_Delete(root);
-
-    /* Flush to flash now — the debounce timer won't fire before the reboot */
-    config_save_now();
+    if (!write_ok) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "write failed");
+        return ESP_OK;
+    }
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, "{\"ok\":true,\"rebooting\":true}");
 
-    /* Reboot from a separate task so the HTTP response is flushed first */
     xTaskCreate(reboot_task, "reboot", 1024, NULL, 5, NULL);
     return ESP_OK;
 }
@@ -791,11 +711,6 @@ void webserver_start(void)
         .method = HTTP_POST,
         .handler = settings_post_handler,
     };
-    static const httpd_uri_t uri_backup_get = {
-        .uri    = "/api/backup",
-        .method = HTTP_GET,
-        .handler = backup_get_handler,
-    };
     static const httpd_uri_t uri_restore_post = {
         .uri    = "/api/restore",
         .method = HTTP_POST,
@@ -808,7 +723,6 @@ void webserver_start(void)
     httpd_register_uri_handler(s_server, &uri_ws);
     httpd_register_uri_handler(s_server, &uri_settings_get);
     httpd_register_uri_handler(s_server, &uri_settings_post);
-    httpd_register_uri_handler(s_server, &uri_backup_get);
     httpd_register_uri_handler(s_server, &uri_restore_post);
 
     ESP_LOGI(TAG, "HTTP server started");
