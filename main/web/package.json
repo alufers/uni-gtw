@@ -7,7 +7,8 @@
     "lint": "oxlint src",
     "lint:fix": "oxlint --fix src",
     "fmt": "oxfmt src",
-    "fmt:check": "oxfmt --check src"
+    "fmt:check": "oxfmt --check src",
+    "check": "tsc --noEmit && oxlint src && oxfmt --check src"
   },
   "dependencies": {
     "lucide-preact": "^1.8.0",

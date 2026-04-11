@@ -23,6 +23,26 @@ idf.py build
 idf.py -p /dev/serial/... flash monitor
 ```
 
+## Frontend checks
+
+Run all three checks (TypeScript, lint, format) in one command:
+
+```bash
+cd main/web && pnpm run check
+```
+
+Individual scripts:
+
+| Script | Tool | Purpose |
+|---|---|---|
+| `pnpm run typecheck` | `tsc --noEmit` | Type-check with TypeScript 6 |
+| `pnpm run lint` | `oxlint src` | Lint with Oxlint (config: `.oxlintrc.json`) |
+| `pnpm run lint:fix` | `oxlint --fix src` | Auto-fix safe lint issues |
+| `pnpm run fmt` | `oxfmt src` | Format files in place |
+| `pnpm run fmt:check` | `oxfmt --check src` | Verify formatting without writing |
+
+All three checks also run as steps inside the `typecheck` CI job on every push/PR.
+
 ## Project layout
 
 ```
@@ -52,12 +72,17 @@ uni-gtw/
     ├── cosmo.h              # redirect: #include "cosmo/cosmo.h"
     └── web/                 # Preact SPA
         ├── package.json     # preact, vite, @preact/preset-vite
+        ├── tsconfig.json    # TS 6: strict, isolatedModules, jsxImportSource preact
+        ├── .oxlintrc.json   # oxlint config: react + unicorn + typescript plugins
         ├── vite.config.js   # output: app.js + app.css (no hash)
         └── src/
+            ├── vite-env.d.ts   # /// <reference types="vite/client" />
             ├── main.tsx
-            ├── App.tsx      # WS connection lifted here; manages lines + channels state
-            ├── Console.tsx  # accepts lines: string[] prop
-            └── Channels.tsx # channel list + UP/STOP/DOWN buttons + new channel form
+            ├── App.tsx         # WS connection lifted here; manages lines + channels state
+            ├── Console.tsx     # accepts lines: string[] prop
+            ├── Channels.tsx    # channel list + UP/STOP/DOWN buttons + new channel form
+            ├── wsTypes.ts      # discriminated-union WsMessage + shared payload types
+            └── useWebsocket.tsx # useWebsocket / useJsonWebsocket hooks
 ```
 
 ## Key design decisions
