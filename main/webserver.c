@@ -342,9 +342,26 @@ static void ws_dispatch(int fd, const char *text)
         else if (strcmp(cmd_name, "REQUEST_POSITION") == 0) cosmo_cmd = COSMO_BTN_REQUEST_POSITION;
         else if (strcmp(cmd_name, "SET_POSITION")     == 0) cosmo_cmd = COSMO_BTN_SET_POSITION;
         else if (strcmp(cmd_name, "SET_TILT")         == 0) cosmo_cmd = COSMO_BTN_SET_TILT;
+        else if (strcmp(cmd_name, "TILT_INCREASE")    == 0) cosmo_cmd = COSMO_BTN_TILT_INCREASE;
+        else if (strcmp(cmd_name, "TILT_DECREASE")    == 0) cosmo_cmd = COSMO_BTN_TILT_DECREASE;
         else { cJSON_Delete(root); return; }
 
         channel_send_cmd(serial, cosmo_cmd, extra_payload);
+
+    } else if (strcmp(cmd, "update_channel") == 0) {
+        cJSON *serial_j = cJSON_GetObjectItem(root, "serial");
+        if (!cJSON_IsNumber(serial_j)) { cJSON_Delete(root); return; }
+        uint32_t serial = (uint32_t)cJSON_GetNumberValue(serial_j);
+
+        const char *name      = cJSON_GetStringValue(cJSON_GetObjectItem(root, "name"));
+        const char *proto_str = cJSON_GetStringValue(cJSON_GetObjectItem(root, "proto"));
+        cosmo_proto_t proto = (proto_str && strcmp(proto_str, "2way") == 0)
+                              ? PROTO_COSMO_2WAY : PROTO_COSMO_1WAY;
+
+        cJSON *fts_j = cJSON_GetObjectItem(root, "force_tilt_support");
+        bool force_tilt = cJSON_IsTrue(fts_j);
+
+        channel_update(serial, name, proto, force_tilt);
 
     } else if (strcmp(cmd, "wifi_scan") == 0) {
         scan_task_arg_t *a = malloc(sizeof(*a));

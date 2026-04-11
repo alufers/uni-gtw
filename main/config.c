@@ -70,10 +70,11 @@ static void do_save(void)
     cJSON *arr = cJSON_CreateArray();
     for (int i = 0; i < count; i++) {
         cJSON *ch = cJSON_CreateObject();
-        cJSON_AddStringToObject(ch, "name",    snap[i].name);
-        cJSON_AddStringToObject(ch, "proto",   snap[i].proto == PROTO_COSMO_2WAY ? "2way" : "1way");
-        cJSON_AddNumberToObject(ch, "serial",  (double)(uint32_t)snap[i].serial);
-        cJSON_AddNumberToObject(ch, "counter", (double)snap[i].counter);
+        cJSON_AddStringToObject(ch, "name",                snap[i].name);
+        cJSON_AddStringToObject(ch, "proto",               snap[i].proto == PROTO_COSMO_2WAY ? "2way" : "1way");
+        cJSON_AddNumberToObject(ch, "serial",              (double)(uint32_t)snap[i].serial);
+        cJSON_AddNumberToObject(ch, "counter",             (double)snap[i].counter);
+        cJSON_AddBoolToObject  (ch, "force_tilt_support",  snap[i].force_tilt_support);
         cJSON_AddItemToArray(arr, ch);
     }
     cJSON_AddItemToObject(root, "channels", arr);
@@ -173,12 +174,14 @@ static void do_load(void)
             cosmo_channel_t *ch = &s_channels[count++];
             memset(ch, 0, sizeof(*ch));
             snprintf(ch->name, sizeof(ch->name), "%s", name);
-            ch->proto    = (strcmp(proto_str, "2way") == 0) ? PROTO_COSMO_2WAY : PROTO_COSMO_1WAY;
-            ch->serial   = (uint32_t)cJSON_GetNumberValue(serial_j);
-            ch->serial  &= ~0x1F;
-            ch->counter  = (uint16_t)cJSON_GetNumberValue(counter_j);
-            ch->state    = CHANNEL_STATE_UNKNOWN;
-            ch->position = -1;
+            ch->proto             = (strcmp(proto_str, "2way") == 0) ? PROTO_COSMO_2WAY : PROTO_COSMO_1WAY;
+            ch->serial            = (uint32_t)cJSON_GetNumberValue(serial_j);
+            ch->serial           &= ~0x1F;
+            ch->counter           = (uint16_t)cJSON_GetNumberValue(counter_j);
+            ch->state             = CHANNEL_STATE_UNKNOWN;
+            ch->position          = -1;
+            cJSON *fts_j          = cJSON_GetObjectItem(item, "force_tilt_support");
+            ch->force_tilt_support = cJSON_IsTrue(fts_j);
         }
     }
     s_channel_count = count;

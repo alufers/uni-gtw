@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <stdbool.h>
 #include "cosmo/cosmo.h"
 #include "esp_err.h"
 
@@ -26,12 +27,15 @@ typedef struct {
     cosmo_channel_state_t state;
     int8_t                rssi;
     int64_t               last_seen_ts;
-    int16_t               position;  /* 2-way only: 0-100 % open, -1 = unknown */
+    int16_t               position;           /* 2-way only: 0-100 % open, -1 = unknown */
+    bool                  reports_tilt_support; /* set by firmware on RX; not user-configurable */
+    bool                  force_tilt_support;   /* user override: always show tilt controls */
 } cosmo_channel_t;
 
 void      channel_init(void);
 esp_err_t channel_create(const char *name, cosmo_proto_t proto);
 esp_err_t channel_delete(uint32_t serial);
+esp_err_t channel_update(uint32_t serial, const char *name, cosmo_proto_t proto, bool force_tilt_support);
 void      channel_update_from_packet(const cosmo_packet_t *pkt);
 esp_err_t channel_send_cmd(uint32_t serial, cosmo_cmd_t cmd, uint8_t extra_payload);
 void      channel_send_all(int fd); /* send {"cmd":"channels","payload":[...]} to one fd */

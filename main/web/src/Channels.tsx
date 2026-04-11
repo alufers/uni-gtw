@@ -1,5 +1,15 @@
 import { useState } from "preact/hooks";
-import { CircleChevronUp, CircleChevronDown, CircleStop, Plus, Settings, X } from "lucide-preact";
+import {
+  ChevronUp,
+  ChevronDown,
+  Square,
+  Plus,
+  Settings,
+  X,
+  Pencil,
+  RotateCw,
+  RotateCcw,
+} from "lucide-preact";
 import { Button } from "./Button";
 import { Collapsible } from "./Collapsible";
 import { rssiToSignalIcon } from "./icons";
@@ -25,6 +35,8 @@ export interface Channel {
   rssi: number;
   last_seen_ts: number;
   position: number | null;
+  reports_tilt_support: boolean;
+  force_tilt_support: boolean;
 }
 
 interface ChannelsProps {
@@ -90,6 +102,162 @@ function formatLastSeen(ts: number): string {
   return `${Math.floor(diff / 3600)}h ago`;
 }
 
+/* ── ControlButton — 60×60 square icon button with tooltip ── */
+function ControlButton({
+  onClick,
+  title,
+  variant = "secondary",
+  children,
+}: {
+  onClick: () => void;
+  title: string;
+  variant?: "primary" | "secondary" | "danger";
+  children: preact.ComponentChildren;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      class={`
+        w-[60px] h-[60px] flex items-center justify-center rounded cursor-pointer border-0 text-zinc-100
+        ${variant === "primary"   ? "bg-blue-900 hover:bg-blue-800"  : ""}
+        ${variant === "secondary" ? "bg-zinc-700 hover:bg-zinc-600"  : ""}
+        ${variant === "danger"    ? "bg-red-900  hover:bg-red-800"   : ""}
+      `}
+    >
+      {children}
+    </button>
+  );
+}
+
+/* ── 3×3 Control Grid ── */
+function ControlGrid({
+  ch,
+  sendCmd,
+  hasTilt,
+}: {
+  ch: Channel;
+  sendCmd: (cmd: string, extra?: number) => void;
+  hasTilt: boolean;
+}) {
+  /*
+   *  Layout (hasTilt):         Layout (no tilt):
+   *  [   ] [Up  ] [   ]        [   ] [Up  ] [   ]
+   *  [T+ ] [Stop] [T- ]        [   ] [Stop] [   ]
+   *  [   ] [Down] [   ]        [   ] [Down] [   ]
+   */
+  const empty = <div class="w-[60px] h-[60px]" />;
+  return (
+    <div class="grid grid-cols-3 gap-1 w-fit">
+      {/* row 0 */}
+      {empty}
+      <ControlButton onClick={() => sendCmd("UP")} title="Up" variant="primary">
+        <ChevronUp size={28} />
+      </ControlButton>
+      {empty}
+
+      {/* row 1 */}
+      {hasTilt ? (
+        <ControlButton onClick={() => sendCmd("TILT_INCREASE")} title="Tilt increase" variant="secondary">
+          <RotateCw size={22} />
+        </ControlButton>
+      ) : empty}
+      <ControlButton onClick={() => sendCmd("STOP")} title="Stop" variant="secondary">
+        <Square size={22} />
+      </ControlButton>
+      {hasTilt ? (
+        <ControlButton onClick={() => sendCmd("TILT_DECREASE")} title="Tilt decrease" variant="secondary">
+          <RotateCcw size={22} />
+        </ControlButton>
+      ) : empty}
+
+      {/* row 2 */}
+      {empty}
+      <ControlButton onClick={() => sendCmd("DOWN")} title="Down" variant="danger">
+        <ChevronDown size={28} />
+      </ControlButton>
+      {empty}
+    </div>
+  );
+}
+
+/* ── ChannelForm — shared between Create and Edit ── */
+interface ChannelFormProps {
+  /** undefined → create mode; defined → edit mode */
+  channel?: Channel;
+  onSubmit: (data: { name: string; proto: "1way" | "2way"; force_tilt_support?: boolean }) => void;
+  onCancel: () => void;
+}
+
+function ChannelForm({ channel, onSubmit, onCancel }: ChannelFormProps) {
+  const isEdit = channel !== undefined;
+  const [name, setName] = useState(channel?.name ?? "");
+  const [proto, setProto] = useState<"1way" | "2way">(channel?.proto ?? "1way");
+  const [forceTilt, setForceTilt] = useState(channel?.force_tilt_support ?? false);
+
+  const handleSubmit = () => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    onSubmit({
+      name: trimmed,
+      proto,
+      ...(isEdit && { force_tilt_support: forceTilt }),
+    });
+  };
+
+  return (
+    <div class="bg-zinc-900 rounded border border-zinc-700 p-2 mb-2">
+      <p class="text-zinc-400 text-xs font-semibold mb-2">
+        {isEdit ? `Edit: ${channel!.name}` : "New Channel"}
+      </p>
+      <label class="block text-zinc-500 text-[10px] uppercase tracking-wide mb-0.5">Channel name</label>
+      <input
+        type="text"
+        placeholder="Channel name"
+        value={name}
+        maxLength={32}
+        onInput={(e) => setName((e.target as HTMLInputElement).value)}
+        onKeyDown={(e) => e.key === "Enter" && handleSubmit()}
+        class="w-full bg-zinc-800 text-zinc-100 border border-zinc-600 rounded px-2 py-1 text-xs mb-2 font-mono"
+      />
+      <label class="block text-zinc-500 text-[10px] uppercase tracking-wide mb-0.5">Protocol</label>
+      <select
+        value={proto}
+        onChange={(e) => setProto((e.target as HTMLSelectElement).value as "1way" | "2way")}
+        class="w-full bg-zinc-800 text-zinc-100 border border-zinc-600 rounded px-2 py-1 text-xs mb-2"
+      >
+        <option value="1way">COSMO</option>
+        <option value="2way">COSMO 2WAY</option>
+      </select>
+      {isEdit && proto === "2way" && (
+        <label class="flex items-center gap-2 text-xs text-zinc-300 mb-2 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={forceTilt}
+            onChange={(e) => setForceTilt((e.target as HTMLInputElement).checked)}
+            class="accent-blue-500"
+          />
+          Force tilt support
+        </label>
+      )}
+      <div class="flex gap-1">
+        <Button
+          variant="primary"
+          disabled={!name.trim()}
+          onClick={handleSubmit}
+          class="flex-1"
+        >
+          {isEdit ? "Save" : "Create"}
+        </Button>
+        <Button onClick={onCancel} class="flex-1">
+          Cancel
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/* ── ChannelCard ── */
 function ChannelCard({
   ch,
   onSend,
@@ -98,6 +266,7 @@ function ChannelCard({
   onSend: (msg: object) => void;
 }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [editing, setEditing] = useState(false);
   const [payloadValues, setPayloadValues] = useState<Record<string, number>>(
     () => Object.fromEntries(PAYLOAD_CMDS.map((c) => [c.value, 0]))
   );
@@ -118,14 +287,29 @@ function ChannelCard({
     onSend({ cmd: "delete_channel", serial: ch.serial });
   };
 
+  const handleEdit = (data: { name: string; proto: "1way" | "2way"; force_tilt_support?: boolean }) => {
+    onSend({ cmd: "update_channel", serial: ch.serial, ...data });
+    setEditing(false);
+  };
+
+  const hasTilt = ch.proto === "2way" && (ch.reports_tilt_support || ch.force_tilt_support);
+
   return (
     <div class="bg-zinc-900 rounded border border-zinc-800 p-2 mb-2">
-      {/* Name + state + delete */}
+      {/* Name + state + action buttons */}
       <div class="flex items-baseline mb-1 gap-1">
         <span class="flex-1 font-bold text-sm truncate">{ch.name}</span>
         <span class={`text-xs ${STATE_CLASS[ch.state]}`}>
           {STATE_LABEL[ch.state]}
         </span>
+        <Button
+          variant="ghost"
+          onClick={() => { setEditing((v) => !v); setConfirmDelete(false); }}
+          class="px-1 py-0 text-xs leading-4 shrink-0"
+          title="Edit channel"
+        >
+          <Pencil size={12} />
+        </Button>
         <Button
           variant={confirmDelete ? "danger" : "ghost"}
           onClick={handleDelete}
@@ -137,9 +321,14 @@ function ChannelCard({
         </Button>
       </div>
 
+      {/* Edit form */}
+      {editing && (
+        <ChannelForm channel={ch} onSubmit={handleEdit} onCancel={() => setEditing(false)} />
+      )}
+
       {/* Meta */}
       <div class="text-xs text-zinc-500 mb-2 flex gap-2 flex-wrap items-center">
-        <span>{ch.proto}</span>
+        <span>{ch.proto === "2way" ? "COSMO 2WAY" : "COSMO"}</span>
         <span>CNT: {ch.counter}</span>
         <span>0x{ch.serial.toString(16).toUpperCase().padStart(8, "0")}</span>
         {ch.last_seen_ts > 0 && (() => {
@@ -156,21 +345,9 @@ function ChannelCard({
         )}
       </div>
 
-      {/* Main controls */}
-      <div class="flex gap-1 mb-1">
-        <Button variant="primary" onClick={() => sendCmd("UP")} class="flex-1 flex items-center justify-center gap-1">
-          <CircleChevronUp size={14} /> Up
-        </Button>
-        <Button
-          variant="secondary"
-          onClick={() => sendCmd("STOP")}
-          class="flex-1 flex items-center justify-center gap-1"
-        >
-          <CircleStop size={14} /> Stop
-        </Button>
-        <Button variant="danger" onClick={() => sendCmd("DOWN")} class="flex-1 flex items-center justify-center gap-1">
-          <CircleChevronDown size={14} /> Down
-        </Button>
+      {/* Main controls — 3×3 grid */}
+      <div class="flex justify-center mb-1">
+        <ControlGrid ch={ch} sendCmd={sendCmd} hasTilt={hasTilt} />
       </div>
 
       {/* Advanced collapsible */}
@@ -231,14 +408,9 @@ function ChannelCard({
 
 export function Channels({ channels, onSend, radioStatus, onGoToSettings }: ChannelsProps) {
   const [showForm, setShowForm] = useState(false);
-  const [newName, setNewName] = useState("");
-  const [newProto, setNewProto] = useState<"1way" | "2way">("1way");
 
-  const createChannel = () => {
-    const name = newName.trim();
-    if (!name) return;
-    onSend({ cmd: "create_channel", name, proto: newProto });
-    setNewName("");
+  const createChannel = (data: { name: string; proto: "1way" | "2way" }) => {
+    onSend({ cmd: "create_channel", name: data.name, proto: data.proto });
     setShowForm(false);
   };
 
@@ -270,42 +442,7 @@ export function Channels({ channels, onSend, radioStatus, onGoToSettings }: Chan
 
       {/* New channel form */}
       {showForm && (
-        <div class="bg-zinc-900 rounded border border-zinc-700 p-2 mb-2">
-          <input
-            type="text"
-            placeholder="Channel name"
-            value={newName}
-            maxLength={32}
-            onInput={(e) => setNewName((e.target as HTMLInputElement).value)}
-            onKeyDown={(e) => e.key === "Enter" && createChannel()}
-            class="w-full bg-zinc-800 text-zinc-100 border border-zinc-600 rounded px-2 py-1 text-xs mb-1 font-mono"
-          />
-          <select
-            value={newProto}
-            onChange={(e) =>
-              setNewProto(
-                (e.target as HTMLSelectElement).value as "1way" | "2way"
-              )
-            }
-            class="w-full bg-zinc-800 text-zinc-100 border border-zinc-600 rounded px-2 py-1 text-xs mb-2"
-          >
-            <option value="1way">1-way</option>
-            <option value="2way">2-way</option>
-          </select>
-          <div class="flex gap-1">
-            <Button
-              variant="primary"
-              disabled={!newName.trim()}
-              onClick={createChannel}
-              class="flex-1"
-            >
-              Create
-            </Button>
-            <Button onClick={() => setShowForm(false)} class="flex-1">
-              Cancel
-            </Button>
-          </div>
-        </div>
+        <ChannelForm onSubmit={createChannel} onCancel={() => setShowForm(false)} />
       )}
 
       {/* Empty state */}

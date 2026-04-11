@@ -63,6 +63,8 @@ static cJSON *channel_to_cjson(const cosmo_channel_t *ch)
         cJSON_AddNumberToObject(obj, "position", (double)ch->position);
     else
         cJSON_AddNullToObject(obj, "position");
+    cJSON_AddBoolToObject(obj, "reports_tilt_support", ch->reports_tilt_support);
+    cJSON_AddBoolToObject(obj, "force_tilt_support",   ch->force_tilt_support);
     return obj;
 }
 
@@ -185,6 +187,31 @@ esp_err_t channel_delete(uint32_t serial)
     char *json = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
     if (json) { webserver_ws_broadcast_json(json); free(json); }
+    return ESP_OK;
+}
+
+esp_err_t channel_update(uint32_t serial, const char *name, cosmo_proto_t proto, bool force_tilt_support)
+{
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    cosmo_channel_t *ch = channel_find_locked(serial);
+    if (!ch) {
+        xSemaphoreGive(s_mutex);
+        return ESP_ERR_NOT_FOUND;
+    }
+    if (name && name[0])
+        snprintf(ch->name, sizeof(ch->name), "%s", name);
+    ch->proto             = proto;
+    ch->force_tilt_support = force_tilt_support;
+
+    cosmo_channel_t copy = *ch;
+    channel_mark_dirty();
+    xSemaphoreGive(s_mutex);
+
+    ESP_LOGI(TAG, "Updated channel serial=0x%08X name=\"%s\" proto=%s force_tilt=%d",
+             (unsigned)copy.serial, copy.name,
+             (copy.proto == PROTO_COSMO_2WAY) ? "2way" : "1way",
+             (int)copy.force_tilt_support);
+    broadcast_channel_update(&copy);
     return ESP_OK;
 }
 
