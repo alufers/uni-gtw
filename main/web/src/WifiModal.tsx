@@ -19,7 +19,7 @@ export function WifiModal({ onClose, onSubmit, onScan, scanResults }: WifiModalP
   /* Trigger scan on first mount */
   useEffect(() => {
     onScan();
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps -- intentional: trigger once on mount only
 
   /* Determine if the selected network is open */
   const selectedEntry = scanResults?.find((e) => e.ssid === ssid);

@@ -112,7 +112,10 @@ export function Settings() {
 
   /** Scroll the radio section into view — called from external button. */
   const scrollToRadio = () => {
-    radioSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    radioSectionRef.current?.scrollIntoView({
+      behavior: "smooth",
+      block: "start",
+    });
   };
   // Expose via a custom event so App.tsx can trigger it without prop drilling.
   useEffect(() => {
@@ -148,11 +151,11 @@ export function Settings() {
     const file = (e.target as HTMLInputElement).files?.[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = () => {
+    reader.addEventListener("load", () => {
       setRestoreFileName(file.name);
       setRestoreFileContent(reader.result as string);
       setShowRestoreConfirm(true);
-    };
+    });
     reader.readAsText(file);
     /* Reset so the same file can be selected again if needed */
     (e.target as HTMLInputElement).value = "";
@@ -239,7 +242,10 @@ export function Settings() {
               value={draft.hostname}
               maxLength={63}
               onInput={(e) =>
-                setDraft({ ...draft, hostname: (e.target as HTMLInputElement).value })
+                setDraft({
+                  ...draft,
+                  hostname: (e.target as HTMLInputElement).value,
+                })
               }
               class="w-full bg-zinc-800 text-zinc-100 border border-zinc-600 rounded px-2 py-1 text-xs font-mono mb-1"
             />
