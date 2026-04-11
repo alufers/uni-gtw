@@ -38,4 +38,4 @@ esp_err_t channel_delete(uint32_t serial);
 esp_err_t channel_update(uint32_t serial, const char *name, cosmo_proto_t proto, bool force_tilt_support);
 void      channel_update_from_packet(const cosmo_packet_t *pkt);
 esp_err_t channel_send_cmd(uint32_t serial, cosmo_cmd_t cmd, uint8_t extra_payload);
-void      channel_send_all(int fd); /* send {"cmd":"channels","payload":[...]} to one fd */
+void      channel_send_all(int fd);  /* send {"cmd":"channels","payload":[...]} to one fd */

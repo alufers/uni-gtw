@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { Button } from "./Button";
+import { Modal } from "./Modal";
 
 interface MqttConfig {
   enabled: boolean;
@@ -25,7 +26,7 @@ export interface SettingsData {
   radio: RadioConfig;
 }
 
-type SaveStatus = "idle" | "loading" | "saving" | "saved" | "error";
+type SaveStatus = "idle" | "loading" | "saving" | "saved" | "rebooting" | "error";
 
 /** Returns a list of GPIO field pairs that share the same pin number. */
 function findGpioDuplicates(radio: RadioConfig): Set<keyof RadioConfig> {
@@ -87,6 +88,10 @@ export function Settings() {
   const [draft, setDraft] = useState<SettingsData | null>(null);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("loading");
   const radioSectionRef = useRef<HTMLElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [showRestoreConfirm, setShowRestoreConfirm] = useState(false);
+  const [restoreFileContent, setRestoreFileContent] = useState<string | null>(null);
+  const [restoreFileName, setRestoreFileName] = useState<string>("");
 
   useEffect(() => {
     fetch("/api/settings")
@@ -111,6 +116,64 @@ export function Settings() {
     window.addEventListener("settings:scroll-radio", handler);
     return () => window.removeEventListener("settings:scroll-radio", handler);
   }, []);
+
+  const downloadBackup = () => {
+    const now = new Date();
+    const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+    const timeStr = `${String(now.getHours()).padStart(2, "0")}${String(now.getMinutes()).padStart(2, "0")}`;
+    const hostname = draft?.hostname ?? "uni-gtw";
+    const filename = `${hostname}-backup-${dateStr}-${timeStr}.json`;
+
+    fetch("/api/backup")
+      .then((r) => {
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.blob();
+      })
+      .then((blob) => {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = filename;
+        a.click();
+        URL.revokeObjectURL(url);
+      })
+      .catch(() => alert("Backup failed — check connection"));
+  };
+
+  const handleRestoreFileChange = (e: Event) => {
+    const file = (e.target as HTMLInputElement).files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      setRestoreFileName(file.name);
+      setRestoreFileContent(reader.result as string);
+      setShowRestoreConfirm(true);
+    };
+    reader.readAsText(file);
+    /* Reset so the same file can be selected again if needed */
+    (e.target as HTMLInputElement).value = "";
+  };
+
+  const confirmRestore = () => {
+    if (!restoreFileContent) return;
+    setShowRestoreConfirm(false);
+    setSaveStatus("saving");
+    fetch("/api/restore", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: restoreFileContent,
+    })
+      .then((r) => {
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        /* Device will reboot — auto-reconnect handles re-connecting */
+        setSaveStatus("rebooting");
+      })
+      .catch(() => setSaveStatus("error"))
+      .finally(() => {
+        setRestoreFileContent(null);
+        setRestoreFileName("");
+      });
+  };
 
   const save = () => {
     if (!draft) return;
@@ -146,7 +209,7 @@ export function Settings() {
 
   if (saveStatus === "loading" || !draft) {
     return (
-      <div class="p-4 text-zinc-500 text-xs">
+      <div class="h-full flex items-center justify-center text-zinc-500 text-xs">
         {saveStatus === "error" ? "Failed to load settings." : "Loading settings…"}
       </div>
     );
@@ -158,6 +221,7 @@ export function Settings() {
   const radioDisabled = !draft.radio.enabled;
 
   return (
+    <>
     <div class="p-4 overflow-y-auto h-full">
       <div class="max-w-lg mx-auto">
 
@@ -321,7 +385,7 @@ export function Settings() {
           <Button
             variant="primary"
             onClick={save}
-            disabled={saveStatus === "saving" || hasErrors}
+            disabled={saveStatus === "saving" || saveStatus === "rebooting" || hasErrors}
             title={hasErrors ? "Fix GPIO conflicts before saving" : undefined}
           >
             {saveStatus === "saving" ? "Saving…" : "Save settings"}
@@ -329,12 +393,58 @@ export function Settings() {
           {saveStatus === "saved" && (
             <span class="text-green-400 text-xs">Saved!</span>
           )}
+          {saveStatus === "rebooting" && (
+            <span class="text-amber-400 text-xs">Rebooting… reconnecting shortly</span>
+          )}
           {saveStatus === "error" && (
             <span class="text-red-400 text-xs">Error — check connection</span>
           )}
         </div>
 
+        {/* ── Backup / Restore ─────────────────────────────────────────── */}
+        <section class="mt-8 mb-4">
+          <h3 class="text-xs font-semibold text-zinc-400 mb-3 uppercase tracking-wide">
+            Backup &amp; Restore
+          </h3>
+          <p class="text-zinc-500 text-xs mb-3">
+            Export all settings and channels as a JSON file, or restore from a
+            previous backup.
+          </p>
+          <div class="flex gap-2 flex-wrap">
+            <Button onClick={downloadBackup}>
+              Export backup
+            </Button>
+            <Button onClick={() => fileInputRef.current?.click()}>
+              Import backup…
+            </Button>
+          </div>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".json,application/json"
+            class="hidden"
+            onChange={handleRestoreFileChange}
+          />
+        </section>
+
       </div>
     </div>
+
+    {showRestoreConfirm && (
+      <Modal
+        title="Restore backup?"
+        okLabel="Restore &amp; Reboot"
+        onOk={confirmRestore}
+        onCancel={() => { setShowRestoreConfirm(false); setRestoreFileContent(null); setRestoreFileName(""); }}
+      >
+        <p class="text-xs text-zinc-500 mb-3 font-mono break-all">{restoreFileName}</p>
+        <p class="text-sm text-zinc-300 mb-2">
+          All current settings and channels will be <strong>overwritten</strong> with
+          the data from this backup. The device will reboot to apply the new configuration.
+        </p>
+        <p class="text-xs text-zinc-500">This action cannot be undone.</p>
+      </Modal>
+    )}
+    </>
   );
 }

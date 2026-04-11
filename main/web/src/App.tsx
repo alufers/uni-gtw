@@ -21,8 +21,9 @@ export function App() {
   const [showWifiModal, setShowWifiModal] = useState(false);
   const [activeTab, setActiveTab] = useState("control");
   const wifiDismissedRef = useRef(false);
+  const lastStatusTimeRef = useRef<number>(0);
 
-  const { lastJsonMessage, sendJsonMessage, readyState } =
+  const { lastJsonMessage, sendJsonMessage, readyState, forceReconnect } =
     useJsonWebsocket<WsMessage>(`ws://${location.host}/ws`);
 
   useEffect(() => {
@@ -46,6 +47,7 @@ export function App() {
       const { serial } = lastJsonMessage.payload;
       setChannels((prev) => prev.filter((c) => c.serial !== serial));
     } else if (lastJsonMessage.cmd === "status") {
+      lastStatusTimeRef.current = Date.now();
       setStatus(lastJsonMessage.payload);
       if (lastJsonMessage.payload.wifi_mode === "ap" && !wifiDismissedRef.current) {
         setShowWifiModal(true);
@@ -55,14 +57,35 @@ export function App() {
     }
   }, [lastJsonMessage]);
 
+  /* Clear stale state on reconnect; add "[disconnected]" on close */
   useEffect(() => {
-    if (readyState === ReadyState.CLOSED) {
+    if (readyState === ReadyState.OPEN) {
+      setLines([]);
+      setStatus(null);
+      lastStatusTimeRef.current = 0;
+    } else if (readyState === ReadyState.CLOSED) {
       setLines((prev) => [...prev, "[disconnected]"]);
+      setStatus(null);
     }
   }, [readyState]);
 
+  /* Force-reconnect if no status message received for >20s while connected */
+  useEffect(() => {
+    if (readyState !== ReadyState.OPEN) return;
+    const interval = setInterval(() => {
+      if (
+        lastStatusTimeRef.current > 0 &&
+        Date.now() - lastStatusTimeRef.current > 20_000
+      ) {
+        forceReconnect();
+      }
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [readyState, forceReconnect]);
+
+  const radioStatus: RadioStatus | null = status?.radio_status ?? null;
   const connected = readyState === ReadyState.OPEN;
-  const radioStatus: RadioStatus = status?.radio_status ?? "not_configured";
+  const connecting = readyState === ReadyState.CONNECTING;
 
   const goToSettings = () => setActiveTab("settings");
 
@@ -71,6 +94,7 @@ export function App() {
       <TopBar
         status={status}
         connected={connected}
+        connecting={connecting}
         radioStatus={radioStatus}
         onGoToSettings={goToSettings}
         onOpenWifiModal={() => setShowWifiModal(true)}

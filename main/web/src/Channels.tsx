@@ -42,7 +42,7 @@ export interface Channel {
 interface ChannelsProps {
   channels: Channel[];
   onSend: (msg: object) => void;
-  radioStatus: RadioStatus;
+  radioStatus: RadioStatus | null;
   onGoToSettings: () => void;
 }
 
@@ -369,9 +369,9 @@ function ChannelCard({
           </div>
         ))}
 
-        {/* Payload commands — 2-way only */}
+        {/* Payload commands — 2-way only; SET_TILT requires tilt support */}
         {ch.proto === "2way" &&
-          PAYLOAD_CMDS.map((c) => (
+          PAYLOAD_CMDS.filter((c) => c.value !== "SET_TILT" || hasTilt).map((c) => (
             <div key={c.value} class="flex gap-1">
               <Button
                 variant="secondary"

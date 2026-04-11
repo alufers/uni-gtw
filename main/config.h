@@ -47,6 +47,10 @@ void config_init(void);
 void config_load_channels(cosmo_channel_t *out, int *out_count);
 void config_save_channels(const cosmo_channel_t *arr, int count); /* debounced */
 
+/* Force an immediate synchronous save (bypasses the debounce timer).
+ * Use before a planned reboot so dirty state is not lost. */
+void config_save_now(void);
+
 /* Runtime config access */
 void      config_get(gateway_config_t *out);
 esp_err_t config_set_hostname(const char *hostname);

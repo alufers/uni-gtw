@@ -1,4 +1,4 @@
-import { useEffect, useState } from "preact/hooks";
+import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 
 export const enum ReadyState {
   UNINSTANTIATED = -1,
@@ -8,14 +8,8 @@ export const enum ReadyState {
   CLOSED = 3,
 }
 
-export interface UseWebsocketOptions {
-  binaryType: BinaryType;
-}
-
-export default function useWebsocket(
-  webSocketUrl: string | null,
-  options?: UseWebsocketOptions
-) {
+export default function useWebsocket(webSocketUrl: string | null) {
+  const [reconnectTick, setReconnectTick] = useState(0);
   const [readyState, setReadyState] = useState<ReadyState>(
     ReadyState.UNINSTANTIATED
   );
@@ -23,43 +17,61 @@ export default function useWebsocket(
     null
   );
   const [webSocket, setWebSocket] = useState<WebSocket | null>(null);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const forceReconnect = useCallback(() => {
+    if (reconnectTimerRef.current !== null) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+    setReconnectTick((t) => t + 1);
+  }, []);
 
   useEffect(() => {
     if (webSocketUrl === null) {
-      if (webSocket) {
-        webSocket.close();
-        setWebSocket(null);
-      }
       setReadyState(ReadyState.UNINSTANTIATED);
       return;
     }
 
+    let cleanedUp = false;
+
     const ws = new WebSocket(webSocketUrl);
-    if (options?.binaryType) {
-      ws.binaryType = options.binaryType;
-    }
     setWebSocket(ws);
     setReadyState(ReadyState.CONNECTING);
 
     ws.addEventListener("open", () => {
+      if (cleanedUp) return;
       setReadyState(ReadyState.OPEN);
     });
+
     ws.addEventListener("close", () => {
+      if (cleanedUp) return;
       setReadyState(ReadyState.CLOSED);
+      reconnectTimerRef.current = setTimeout(() => {
+        reconnectTimerRef.current = null;
+        if (!cleanedUp) setReconnectTick((t) => t + 1);
+      }, 3000);
     });
+
     ws.addEventListener("error", () => {
-      setReadyState(ReadyState.CLOSED);
+      /* close event fires after error — reconnect is handled there */
     });
+
     ws.addEventListener("message", (message) => {
+      if (cleanedUp) return;
       setLastMessage(message);
     });
 
     return () => {
+      cleanedUp = true;
       ws.close();
       setWebSocket(null);
-      setReadyState(ReadyState.CLOSED);
+      if (reconnectTimerRef.current !== null) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
     };
-  }, [webSocketUrl]);
+  }, [webSocketUrl, reconnectTick]);
 
   const sendMessage = (
     message: string | ArrayBuffer | Blob | ArrayBufferView
@@ -69,7 +81,7 @@ export default function useWebsocket(
     }
   };
 
-  return { sendMessage, lastMessage, readyState };
+  return { sendMessage, lastMessage, readyState, forceReconnect };
 }
 
 export function useJsonWebsocket<T>(webSocketUrl: string | null) {

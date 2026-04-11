@@ -22,13 +22,14 @@ const RADIO_CHIP: Record<RadioStatus, { label: string; cls: string; clickable: b
 interface TopBarProps {
   status: StatusPayload | null;
   connected: boolean;
-  radioStatus: RadioStatus;
+  connecting: boolean;
+  radioStatus: RadioStatus | null;
   onGoToSettings: () => void;
   onOpenWifiModal: () => void;
 }
 
-export function TopBar({ status, connected, radioStatus, onGoToSettings, onOpenWifiModal }: TopBarProps) {
-  const radioChip = RADIO_CHIP[radioStatus];
+export function TopBar({ status, connected, connecting, radioStatus, onGoToSettings, onOpenWifiModal }: TopBarProps) {
+  const radioChip = radioStatus ? RADIO_CHIP[radioStatus] : null;
 
   const uptimeStr = status ? formatUptime(status.uptime) : null;
   const timeStr =
@@ -57,7 +58,7 @@ export function TopBar({ status, connected, radioStatus, onGoToSettings, onOpenW
       )}
 
       {/* Radio status — not_configured is red and clickable */}
-      {status && (
+      {radioChip && (
         radioChip.clickable ? (
           <ChipButton
             class={radioChip.cls}
@@ -99,11 +100,23 @@ export function TopBar({ status, connected, radioStatus, onGoToSettings, onOpenW
 
       {/* WebSocket connection */}
       <Chip
-        class={connected ? "text-green-400 border-green-900" : "text-red-400 border-red-900"}
-        title={connected ? "WebSocket connected" : "WebSocket disconnected"}
+        class={
+          connected
+            ? "text-green-400 border-green-900"
+            : connecting
+            ? "text-amber-400 border-amber-900"
+            : "text-red-400 border-red-900"
+        }
+        title={
+          connected ? "WebSocket connected" :
+          connecting ? "Connecting…" :
+          "WebSocket disconnected"
+        }
       >
-        {connected ? <Plug size={13} class="shrink-0" /> : <Unplug size={13} class="shrink-0" />}
-        {connected ? "Connected" : "Disconnected"}
+        {connected
+          ? <Plug size={13} class="shrink-0" />
+          : <Unplug size={13} class="shrink-0" />}
+        {connected ? "Connected" : connecting ? "Connecting…" : "Disconnected"}
       </Chip>
     </div>
   );

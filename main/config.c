@@ -19,6 +19,7 @@ static const char *CONFIG_PATH = "/littlefs/config.json";
 static SemaphoreHandle_t s_mutex;
 static TimerHandle_t     s_save_timer;
 static TaskHandle_t      s_save_task;
+static TaskHandle_t      s_save_waiter = NULL; /* task to notify after save */
 
 static gateway_config_t s_config;
 static cosmo_channel_t  s_channels[CHANNEL_MAX_COUNT];
@@ -47,6 +48,7 @@ static void do_save(void)
 
     cJSON *root = cJSON_CreateObject();
 
+    cJSON_AddNumberToObject(root, "version",  1);
     cJSON_AddStringToObject(root, "hostname", cfg.hostname);
 
     cJSON *mqtt_j = cJSON_CreateObject();
@@ -120,6 +122,10 @@ static void do_load(void)
         ESP_LOGW(TAG, "Config JSON parse error");
         return;
     }
+
+    cJSON *ver_j = cJSON_GetObjectItem(root, "version");
+    int version = cJSON_IsNumber(ver_j) ? (int)cJSON_GetNumberValue(ver_j) : 0;
+    ESP_LOGI(TAG, "Config version: %d", version);
 
     const char *hn = cJSON_GetStringValue(cJSON_GetObjectItem(root, "hostname"));
     if (hn && hn[0])
@@ -197,6 +203,9 @@ static void save_task_fn(void *arg)
     while (1) {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
         do_save();
+        TaskHandle_t waiter = s_save_waiter;
+        s_save_waiter = NULL;
+        if (waiter) xTaskNotifyGive(waiter);
     }
 }
 
@@ -233,6 +242,19 @@ void config_init(void)
     s_save_timer = xTimerCreate("cfg_save", pdMS_TO_TICKS(5000),
                                 pdFALSE, NULL, save_timer_cb);
     xTaskCreate(save_task_fn, "cfg_save", 4096, NULL, 5, &s_save_task);
+}
+
+void config_save_now(void)
+{
+    if (!s_save_task) return;
+    /* Stop the debounce timer so it doesn't trigger a redundant save later */
+    if (s_save_timer) xTimerStop(s_save_timer, 0);
+    /* Register ourselves as the waiter, kick the save task, then block until
+     * it completes.  do_save() runs on the save task's own 4 KB stack, avoiding
+     * a stack overflow from deep httpd/LittleFS call chains. */
+    s_save_waiter = xTaskGetCurrentTaskHandle();
+    xTaskNotifyGive(s_save_task);
+    ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(10000));
 }
 
 void config_load_channels(cosmo_channel_t *out, int *out_count)
