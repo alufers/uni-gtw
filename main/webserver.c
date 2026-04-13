@@ -1,6 +1,7 @@
 #include "webserver.h"
 #include "channel.h"
 #include "config.h"
+#include "mqtt.h"
 #include "wifi_manager.h"
 
 #include <string.h>
@@ -24,6 +25,7 @@
 static const char *TAG = "webserver";
 
 extern radio_state_t g_radio_state;
+extern mqtt_status_t g_mqtt_status;
 
 /* ── Config ──────────────────────────────────────────────────────────────── */
 
@@ -214,9 +216,14 @@ static void build_and_send_status(int fd /* -1 = broadcast */)
     const char *radio_status_str =
         (g_radio_state == RADIO_STATE_OK)             ? "ok" :
         (g_radio_state == RADIO_STATE_ERROR)          ? "error" : "not_configured";
+    const char *mqtt_status_str =
+        (g_mqtt_status == MQTT_STATUS_CONNECTED)    ? "connected"    :
+        (g_mqtt_status == MQTT_STATUS_CONNECTING)   ? "connecting"   :
+        (g_mqtt_status == MQTT_STATUS_DISCONNECTED) ? "disconnected" : "unconfigured";
 
     cJSON_AddStringToObject(payload, "wifi_mode",     (mode == WIFI_MGR_MODE_AP) ? "ap" : "sta");
     cJSON_AddStringToObject(payload, "radio_status",  radio_status_str);
+    cJSON_AddStringToObject(payload, "mqtt_status",   mqtt_status_str);
     if (has_rssi)
         cJSON_AddNumberToObject(payload, "wifi_rssi", rssi);
     else
@@ -312,6 +319,32 @@ static void ws_dispatch(int fd, const char *text)
                               ? PROTO_COSMO_2WAY : PROTO_COSMO_1WAY;
         channel_create(name ? name : "Unnamed", proto);
 
+        /* Apply device_class and mqtt_name if provided */
+        cJSON *dc_j    = cJSON_GetObjectItem(root, "device_class");
+        cJSON *mname_j = cJSON_GetObjectItem(root, "mqtt_name");
+        if (cJSON_IsNumber(dc_j) || (mname_j && cJSON_IsString(mname_j))) {
+            /* Find the channel we just created by name (it's the last one added) */
+            cosmo_channel_t snap[CHANNEL_MAX_COUNT];
+            int count = channel_snapshot(snap);
+            if (count > 0) {
+                cosmo_channel_t *last = &snap[count - 1];
+                cosmo_channel_settings_t s = {
+                    .proto                  = last->proto,
+                    .force_tilt_support     = last->force_tilt_support,
+                    .bidirectional_feedback = last->bidirectional_feedback,
+                    .feedback_timeout_s     = last->feedback_timeout_s,
+                    .device_class           = cJSON_IsNumber(dc_j)
+                                              ? (cosmo_channel_device_class_t)(int)cJSON_GetNumberValue(dc_j)
+                                              : last->device_class,
+                };
+                snprintf(s.name, sizeof(s.name), "%s", last->name);
+                const char *mname_str = cJSON_GetStringValue(mname_j);
+                if (mname_str && mname_str[0])
+                    snprintf(s.mqtt_name, sizeof(s.mqtt_name), "%s", mname_str);
+                channel_update(last->serial, &s);
+            }
+        }
+
     } else if (strcmp(cmd, "delete_channel") == 0) {
         cJSON *serial_j = cJSON_GetObjectItem(root, "serial");
         if (!cJSON_IsNumber(serial_j)) { cJSON_Delete(root); return; }
@@ -357,9 +390,18 @@ static void ws_dispatch(int fd, const char *text)
         const char *name      = cJSON_GetStringValue(cJSON_GetObjectItem(root, "name"));
         const char *proto_str = cJSON_GetStringValue(cJSON_GetObjectItem(root, "proto"));
 
-        cJSON *fts_j = cJSON_GetObjectItem(root, "force_tilt_support");
-        cJSON *bf_j  = cJSON_GetObjectItem(root, "bidirectional_feedback");
-        cJSON *ft_j  = cJSON_GetObjectItem(root, "feedback_timeout_s");
+        cJSON *fts_j   = cJSON_GetObjectItem(root, "force_tilt_support");
+        cJSON *bf_j    = cJSON_GetObjectItem(root, "bidirectional_feedback");
+        cJSON *ft_j    = cJSON_GetObjectItem(root, "feedback_timeout_s");
+        cJSON *dc_j    = cJSON_GetObjectItem(root, "device_class");
+        cJSON *mname_j = cJSON_GetObjectItem(root, "mqtt_name");
+
+        /* Snapshot to get current values as defaults for fields not in the message */
+        cosmo_channel_t snap[CHANNEL_MAX_COUNT];
+        int snap_count = channel_snapshot(snap);
+        cosmo_channel_t *cur = NULL;
+        for (int _i = 0; _i < snap_count; _i++)
+            if (snap[_i].serial == serial) { cur = &snap[_i]; break; }
 
         cosmo_channel_settings_t s = {
             .proto                  = (proto_str && strcmp(proto_str, "2way") == 0)
@@ -368,9 +410,15 @@ static void ws_dispatch(int fd, const char *text)
             .bidirectional_feedback = cJSON_IsBool(bf_j) ? cJSON_IsTrue(bf_j) : true,
             .feedback_timeout_s     = cJSON_IsNumber(ft_j)
                                       ? (uint16_t)cJSON_GetNumberValue(ft_j) : 120,
+            .device_class           = cJSON_IsNumber(dc_j)
+                                      ? (cosmo_channel_device_class_t)(int)cJSON_GetNumberValue(dc_j)
+                                      : (cur ? cur->device_class : CHANNEL_DEVICE_CLASS_SHUTTER),
         };
         if (name && name[0])
             snprintf(s.name, sizeof(s.name), "%s", name);
+        const char *mname_str = cJSON_GetStringValue(mname_j);
+        if (mname_str && mname_str[0])
+            snprintf(s.mqtt_name, sizeof(s.mqtt_name), "%s", mname_str);
 
         channel_update(serial, &s);
 
@@ -558,7 +606,18 @@ static void apply_settings_from_json(cJSON *root)
         const char *password = cJSON_GetStringValue(cJSON_GetObjectItem(mqtt_j, "password"));
         if (!password) password = current.mqtt.password;
 
-        config_set_mqtt(broker, port, username, password, enabled);
+        cJSON *had_j = cJSON_GetObjectItem(mqtt_j, "ha_discovery_enabled");
+        bool ha_disc = cJSON_IsBool(had_j) ? cJSON_IsTrue(had_j) : current.mqtt.ha_discovery_enabled;
+
+        const char *ha_pfx = cJSON_GetStringValue(cJSON_GetObjectItem(mqtt_j, "ha_prefix"));
+        if (!ha_pfx || !ha_pfx[0]) ha_pfx = current.mqtt.ha_prefix;
+
+        const char *mq_pfx = cJSON_GetStringValue(cJSON_GetObjectItem(mqtt_j, "mqtt_prefix"));
+        if (!mq_pfx || !mq_pfx[0]) mq_pfx = current.mqtt.mqtt_prefix;
+
+        config_set_mqtt(broker, port, username, password, enabled,
+                        ha_disc, ha_pfx, mq_pfx);
+        mqtt_apply_config();
     }
 
     /* Radio */
@@ -689,6 +748,7 @@ void webserver_start(void)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.lru_purge_enable  = true;
     config.max_uri_handlers  = 10;
+    config.stack_size = 6500;
 
     ESP_LOGI(TAG, "Starting HTTP server on port %d", config.server_port);
     if (httpd_start(&s_server, &config) != ESP_OK) {

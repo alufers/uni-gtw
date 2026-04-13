@@ -10,6 +10,7 @@ idf_component_register(
         "radio.c"
         "channel.c"
         "config.c"
+        "mqtt.c"
     INCLUDE_DIRS "."
     REQUIRES
         esp_wifi
@@ -25,6 +26,7 @@ idf_component_register(
         esp_littlefs
         lwip
         mdns
+        mqtt
     EMBED_FILES
         ${WEB_DIST_DIR}/index.html
         ${WEB_DIST_DIR}/app.js

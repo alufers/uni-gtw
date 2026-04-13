@@ -1,5 +1,6 @@
 #include "channel.h"
 #include "config.h"
+#include "mqtt.h"
 #include "radio.h"
 #include "webserver.h"
 
@@ -17,6 +18,23 @@
 #include "cJSON.h"
 
 static const char *TAG = "channel";
+
+/* ── Helpers ─────────────────────────────────────────────────────────────── */
+
+/* Derive a default mqtt_name from channel name: lowercase, non-alphanumeric → '_' */
+static void derive_mqtt_name(const char *name, char *out, size_t out_size)
+{
+    size_t i = 0;
+    for (; name[i] && i + 1 < out_size; i++) {
+        char c = name[i];
+        if (c >= 'A' && c <= 'Z') c = (char)(c + 32);
+        if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'))
+            out[i] = c;
+        else
+            out[i] = '_';
+    }
+    out[i] = '\0';
+}
 
 /* ── State ───────────────────────────────────────────────────────────────── */
 
@@ -76,6 +94,8 @@ cJSON *channel_to_cjson(const cosmo_channel_t *ch)
     cJSON_AddBoolToObject(obj, "bidirectional_feedback", ch->bidirectional_feedback);
     cJSON_AddNumberToObject(obj, "feedback_timeout_s",  (double)ch->feedback_timeout_s);
     cJSON_AddBoolToObject(obj, "is_state_optimistic",   ch->is_state_optimistic);
+    cJSON_AddNumberToObject(obj, "device_class",        (double)ch->device_class);
+    cJSON_AddStringToObject(obj, "mqtt_name",           ch->mqtt_name);
     return obj;
 }
 
@@ -136,6 +156,7 @@ static void feedback_timer_cb(TimerHandle_t t)
 
     ESP_LOGI(TAG, "Feedback timer expired for serial=0x%08X, state→partially_open", (unsigned)serial);
     broadcast_channel_update(&copy);
+    mqtt_publish_channel_update(&copy);
 }
 
 /* Find the timer slot for a given serial (any slot), or the first unused slot. */
@@ -230,7 +251,9 @@ esp_err_t channel_create(const char *name, cosmo_proto_t proto)
     memset(ch, 0, sizeof(*ch));
     ch->bidirectional_feedback = true;
     ch->feedback_timeout_s     = 120;
+    ch->device_class           = CHANNEL_DEVICE_CLASS_SHUTTER;
     snprintf(ch->name, sizeof(ch->name), "%s", name ? name : "Unnamed");
+    derive_mqtt_name(ch->name, ch->mqtt_name, sizeof(ch->mqtt_name));
     ch->proto    = proto;
     ch->serial   = serial;
     ch->counter  = 0;
@@ -246,6 +269,7 @@ esp_err_t channel_create(const char *name, cosmo_proto_t proto)
              (proto == PROTO_COSMO_2WAY) ? "2way" : "1way");
 
     broadcast_channel_update(&copy);
+    mqtt_publish_channel_update(&copy);
     return ESP_OK;
 }
 
@@ -294,6 +318,11 @@ esp_err_t channel_update(uint32_t serial, const cosmo_channel_settings_t *s)
     ch->force_tilt_support     = s->force_tilt_support;
     ch->bidirectional_feedback = s->bidirectional_feedback;
     ch->feedback_timeout_s     = s->feedback_timeout_s;
+    ch->device_class           = s->device_class;
+    if (s->mqtt_name[0])
+        snprintf(ch->mqtt_name, sizeof(ch->mqtt_name), "%s", s->mqtt_name);
+    else
+        derive_mqtt_name(ch->name, ch->mqtt_name, sizeof(ch->mqtt_name));
 
     cosmo_channel_t copy = *ch;
     channel_mark_dirty();
@@ -306,6 +335,7 @@ esp_err_t channel_update(uint32_t serial, const cosmo_channel_settings_t *s)
              (int)copy.bidirectional_feedback,
              (unsigned)copy.feedback_timeout_s);
     broadcast_channel_update(&copy);
+    mqtt_publish_channel_update(&copy);
     return ESP_OK;
 }
 
@@ -351,6 +381,7 @@ void channel_update_from_packet(const cosmo_packet_t *pkt)
 
     feedback_timer_cancel(ch_serial);
     broadcast_channel_update(&copy);
+    mqtt_publish_channel_update(&copy);
 }
 
 esp_err_t channel_send_cmd(uint32_t serial, cosmo_cmd_t cmd, uint8_t extra_payload)
@@ -429,6 +460,7 @@ esp_err_t channel_send_cmd(uint32_t serial, cosmo_cmd_t cmd, uint8_t extra_paylo
     };
     radio_request_tx(&pkt);
     broadcast_channel_update(&copy);
+    mqtt_publish_channel_update(&copy);
     return ESP_OK;
 }
 
@@ -449,4 +481,28 @@ void channel_send_all(int fd)
     char *json = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
     if (json) { webserver_ws_send_json_to_fd(fd, json); free(json); }
+}
+
+int channel_snapshot(cosmo_channel_t out[CHANNEL_MAX_COUNT])
+{
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    int count = s_channel_count;
+    memcpy(out, s_channels, (size_t)count * sizeof(cosmo_channel_t));
+    xSemaphoreGive(s_mutex);
+    return count;
+}
+
+esp_err_t channel_find_by_mqtt_name(const char *mqtt_name, cosmo_channel_t *out)
+{
+    if (!mqtt_name || !out) return ESP_ERR_INVALID_ARG;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    for (int i = 0; i < s_channel_count; i++) {
+        if (strcmp(s_channels[i].mqtt_name, mqtt_name) == 0) {
+            *out = s_channels[i];
+            xSemaphoreGive(s_mutex);
+            return ESP_OK;
+        }
+    }
+    xSemaphoreGive(s_mutex);
+    return ESP_ERR_NOT_FOUND;
 }

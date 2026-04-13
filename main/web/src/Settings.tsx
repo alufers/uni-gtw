@@ -8,6 +8,9 @@ interface MqttConfig {
   port: number;
   username: string;
   password: string;
+  ha_discovery_enabled: boolean;
+  ha_prefix: string;
+  mqtt_prefix: string;
 }
 
 interface RadioConfig {
@@ -377,6 +380,40 @@ export function Settings() {
                 onInput={(e) => updateMqtt("password", (e.target as HTMLInputElement).value)}
                 class="w-full bg-zinc-800 text-zinc-100 border border-zinc-600 rounded px-2 py-1 text-xs font-mono mb-3"
               />
+
+              <label class="block mb-1 text-xs text-zinc-400">MQTT prefix</label>
+              <input
+                type="text"
+                value={draft.mqtt.mqtt_prefix}
+                placeholder="unigtw"
+                onInput={(e) => updateMqtt("mqtt_prefix", (e.target as HTMLInputElement).value)}
+                class="w-full bg-zinc-800 text-zinc-100 border border-zinc-600 rounded px-2 py-1 text-xs font-mono mb-3"
+              />
+
+              <label class="flex items-center gap-2 mb-3 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={draft.mqtt.ha_discovery_enabled}
+                  onChange={(e) =>
+                    updateMqtt("ha_discovery_enabled", (e.target as HTMLInputElement).checked)
+                  }
+                  class="w-4 h-4 accent-blue-500"
+                />
+                <span class="text-xs text-zinc-300">Enable Home Assistant discovery</span>
+              </label>
+
+              {draft.mqtt.ha_discovery_enabled && (
+                <>
+                  <label class="block mb-1 text-xs text-zinc-400">HA discovery prefix</label>
+                  <input
+                    type="text"
+                    value={draft.mqtt.ha_prefix}
+                    placeholder="homeassistant"
+                    onInput={(e) => updateMqtt("ha_prefix", (e.target as HTMLInputElement).value)}
+                    class="w-full bg-zinc-800 text-zinc-100 border border-zinc-600 rounded px-2 py-1 text-xs font-mono mb-3"
+                  />
+                </>
+              )}
             </div>
           </section>
 

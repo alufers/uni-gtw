@@ -1,7 +1,7 @@
-import { Clock, ClockArrowUp, Plug, Radio, Unplug, WifiZero } from "lucide-preact";
+import { Clock, ClockArrowUp, Plug, Radio, Unplug, WifiZero, Server } from "lucide-preact";
 import { Chip, ChipButton } from "./Chip";
 import { rssiToWifiIcon } from "./icons";
-import { StatusPayload, RadioStatus } from "./wsTypes";
+import { StatusPayload, RadioStatus, MqttStatus } from "./wsTypes";
 
 function formatUptime(seconds: number): string {
   const d = Math.floor(seconds / 86400);
@@ -23,11 +23,19 @@ const RADIO_CHIP: Record<RadioStatus, { label: string; cls: string; clickable: b
   },
 };
 
+const MQTT_CHIP: Record<MqttStatus, { label: string; cls: string } | null> = {
+  unconfigured: null /* hidden — no point showing it when not configured */,
+  connecting: { label: "MQTT connecting", cls: "text-amber-400 border-amber-900" },
+  connected: { label: "MQTT", cls: "text-green-400 border-green-900" },
+  disconnected: { label: "MQTT disconnected", cls: "text-red-400 border-red-900" },
+};
+
 interface TopBarProps {
   status: StatusPayload | null;
   connected: boolean;
   connecting: boolean;
   radioStatus: RadioStatus | null;
+  mqttStatus: MqttStatus | null;
   onGoToSettings: () => void;
   onOpenWifiModal: () => void;
 }
@@ -37,10 +45,12 @@ export function TopBar({
   connected,
   connecting,
   radioStatus,
+  mqttStatus,
   onGoToSettings,
   onOpenWifiModal,
 }: TopBarProps) {
   const radioChip = radioStatus ? RADIO_CHIP[radioStatus] : null;
+  const mqttChip = mqttStatus ? MQTT_CHIP[mqttStatus] : null;
 
   const uptimeStr = status ? formatUptime(status.uptime) : null;
   const timeStr =
@@ -83,6 +93,14 @@ export function TopBar({
             {radioChip.label}
           </Chip>
         ))}
+
+      {/* MQTT status */}
+      {mqttChip && (
+        <Chip class={mqttChip.cls} title={mqttChip.label}>
+          <Server size={13} class="shrink-0" />
+          {mqttChip.label}
+        </Chip>
+      )}
 
       {/* WiFi */}
       {status && status.wifi_mode === "ap" && (

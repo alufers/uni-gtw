@@ -41,6 +41,29 @@ export interface Channel {
   bidirectional_feedback: boolean;
   feedback_timeout_s: number;
   is_state_optimistic: boolean;
+  device_class: number /* cosmo_channel_device_class_t integer */;
+  mqtt_name: string;
+}
+
+export const DEVICE_CLASS_OPTIONS: { value: number; label: string }[] = [
+  { value: 0, label: "Generic" },
+  { value: 1, label: "Awning" },
+  { value: 2, label: "Blind" },
+  { value: 3, label: "Curtain" },
+  { value: 4, label: "Damper" },
+  { value: 5, label: "Door" },
+  { value: 6, label: "Garage" },
+  { value: 7, label: "Gate" },
+  { value: 8, label: "Shade" },
+  { value: 9, label: "Shutter" },
+  { value: 10, label: "Window" },
+  { value: 11, label: "Light (special)" },
+  { value: 12, label: "Switch (special)" },
+  { value: 13, label: "Hidden" },
+];
+
+export function toMqttName(name: string): string {
+  return name.toLowerCase().replace(/[^a-z0-9]+/g, "_");
 }
 
 interface ChannelsProps {
@@ -196,6 +219,8 @@ interface ChannelFormProps {
   onSubmit: (data: {
     name: string;
     proto: "1way" | "2way";
+    device_class: number;
+    mqtt_name: string;
     force_tilt_support?: boolean;
     bidirectional_feedback?: boolean;
     feedback_timeout_s?: number;
@@ -210,6 +235,24 @@ function ChannelForm({ channel, onSubmit, onCancel }: ChannelFormProps) {
   const [forceTilt, setForceTilt] = useState(channel?.force_tilt_support ?? false);
   const [bidirFeedback, setBidirFeedback] = useState(channel?.bidirectional_feedback ?? true);
   const [feedbackTimeout, setFeedbackTimeout] = useState(channel?.feedback_timeout_s ?? 120);
+  const [deviceClass, setDeviceClass] = useState(channel?.device_class ?? 9); /* 9 = SHUTTER */
+  const [mqttName, setMqttName] = useState(channel?.mqtt_name ?? toMqttName(channel?.name ?? ""));
+  /* Track whether the user has manually diverged mqtt_name from the auto-derived value */
+  const [mqttNameTouched, setMqttNameTouched] = useState(false);
+
+  const handleNameChange = (newName: string) => {
+    setName(newName);
+    /* Auto-update mqtt_name only if the user has not customised it */
+    if (!mqttNameTouched || mqttName === toMqttName(name)) {
+      setMqttName(toMqttName(newName));
+      setMqttNameTouched(false);
+    }
+  };
+
+  const handleMqttNameChange = (val: string) => {
+    setMqttName(val);
+    setMqttNameTouched(val !== toMqttName(name));
+  };
 
   const handleSubmit = () => {
     const trimmed = name.trim();
@@ -217,6 +260,8 @@ function ChannelForm({ channel, onSubmit, onCancel }: ChannelFormProps) {
     onSubmit({
       name: trimmed,
       proto,
+      device_class: deviceClass,
+      mqtt_name: mqttName || toMqttName(trimmed),
       ...(isEdit && {
         force_tilt_support: forceTilt,
         bidirectional_feedback: bidirFeedback,
@@ -238,7 +283,7 @@ function ChannelForm({ channel, onSubmit, onCancel }: ChannelFormProps) {
         placeholder="Channel name"
         value={name}
         maxLength={32}
-        onInput={(e) => setName((e.target as HTMLInputElement).value)}
+        onInput={(e) => handleNameChange((e.target as HTMLInputElement).value)}
         onKeyDown={(e) => e.key === "Enter" && handleSubmit()}
         class="w-full bg-zinc-800 text-zinc-100 border border-zinc-600 rounded px-2 py-1 text-xs mb-2 font-mono"
       />
@@ -251,6 +296,31 @@ function ChannelForm({ channel, onSubmit, onCancel }: ChannelFormProps) {
         <option value="1way">COSMO</option>
         <option value="2way">COSMO 2WAY</option>
       </select>
+      <label class="block text-zinc-500 text-[10px] uppercase tracking-wide mb-0.5">
+        Device class
+      </label>
+      <select
+        value={deviceClass}
+        onChange={(e) => setDeviceClass(parseInt((e.target as HTMLSelectElement).value))}
+        class="w-full bg-zinc-800 text-zinc-100 border border-zinc-600 rounded px-2 py-1 text-xs mb-2"
+      >
+        {DEVICE_CLASS_OPTIONS.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+      <label class="block text-zinc-500 text-[10px] uppercase tracking-wide mb-0.5">
+        MQTT name
+      </label>
+      <input
+        type="text"
+        placeholder="mqtt_name"
+        value={mqttName}
+        maxLength={63}
+        onInput={(e) => handleMqttNameChange((e.target as HTMLInputElement).value)}
+        class="w-full bg-zinc-800 text-zinc-100 border border-zinc-600 rounded px-2 py-1 text-xs mb-2 font-mono"
+      />
       {isEdit && proto === "2way" && (
         <label class="flex items-center gap-2 text-xs text-zinc-300 mb-2 cursor-pointer select-none">
           <input
@@ -332,6 +402,8 @@ function ChannelCard({ ch, onSend }: { ch: Channel; onSend: (msg: object) => voi
   const handleEdit = (data: {
     name: string;
     proto: "1way" | "2way";
+    device_class: number;
+    mqtt_name: string;
     force_tilt_support?: boolean;
     bidirectional_feedback?: boolean;
     feedback_timeout_s?: number;
@@ -470,8 +542,19 @@ function ChannelCard({ ch, onSend }: { ch: Channel; onSend: (msg: object) => voi
 export function Channels({ channels, onSend, radioStatus, onGoToSettings }: ChannelsProps) {
   const [showForm, setShowForm] = useState(false);
 
-  const createChannel = (data: { name: string; proto: "1way" | "2way" }) => {
-    onSend({ cmd: "create_channel", name: data.name, proto: data.proto });
+  const createChannel = (data: {
+    name: string;
+    proto: "1way" | "2way";
+    device_class: number;
+    mqtt_name: string;
+  }) => {
+    onSend({
+      cmd: "create_channel",
+      name: data.name,
+      proto: data.proto,
+      device_class: data.device_class,
+      mqtt_name: data.mqtt_name,
+    });
     setShowForm(false);
   };
 

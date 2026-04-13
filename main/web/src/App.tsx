@@ -6,7 +6,7 @@ import { Tabs } from "./Tabs";
 import { TopBar } from "./TopBar";
 import { useJsonWebsocket, ReadyState } from "./useWebsocket";
 import { WifiModal } from "./WifiModal";
-import { WsMessage, StatusPayload, ScanEntry, RadioStatus } from "./wsTypes";
+import { WsMessage, StatusPayload, ScanEntry, RadioStatus, MqttStatus } from "./wsTypes";
 
 const TABS = [
   { id: "control", label: "Control" },
@@ -81,6 +81,7 @@ export function App() {
   }, [readyState, forceReconnect]);
 
   const radioStatus: RadioStatus | null = status?.radio_status ?? null;
+  const mqttStatus: MqttStatus | null = status?.mqtt_status ?? null;
   const connected = readyState === ReadyState.OPEN;
   const connecting = readyState === ReadyState.CONNECTING;
 
@@ -93,6 +94,7 @@ export function App() {
         connected={connected}
         connecting={connecting}
         radioStatus={radioStatus}
+        mqttStatus={mqttStatus}
         onGoToSettings={goToSettings}
         onOpenWifiModal={() => setShowWifiModal(true)}
       />

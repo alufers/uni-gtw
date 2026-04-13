@@ -52,11 +52,14 @@ static void do_save(void)
     cJSON_AddStringToObject(root, "hostname", cfg.hostname);
 
     cJSON *mqtt_j = cJSON_CreateObject();
-    cJSON_AddBoolToObject  (mqtt_j, "enabled",  cfg.mqtt.enabled);
-    cJSON_AddStringToObject(mqtt_j, "broker",   cfg.mqtt.broker);
-    cJSON_AddNumberToObject(mqtt_j, "port",     cfg.mqtt.port);
-    cJSON_AddStringToObject(mqtt_j, "username", cfg.mqtt.username);
-    cJSON_AddStringToObject(mqtt_j, "password", cfg.mqtt.password);
+    cJSON_AddBoolToObject  (mqtt_j, "enabled",              cfg.mqtt.enabled);
+    cJSON_AddStringToObject(mqtt_j, "broker",               cfg.mqtt.broker);
+    cJSON_AddNumberToObject(mqtt_j, "port",                 cfg.mqtt.port);
+    cJSON_AddStringToObject(mqtt_j, "username",             cfg.mqtt.username);
+    cJSON_AddStringToObject(mqtt_j, "password",             cfg.mqtt.password);
+    cJSON_AddBoolToObject  (mqtt_j, "ha_discovery_enabled", cfg.mqtt.ha_discovery_enabled);
+    cJSON_AddStringToObject(mqtt_j, "ha_prefix",            cfg.mqtt.ha_prefix);
+    cJSON_AddStringToObject(mqtt_j, "mqtt_prefix",          cfg.mqtt.mqtt_prefix);
     cJSON_AddItemToObject(root, "mqtt", mqtt_j);
 
     cJSON *radio_j = cJSON_CreateObject();
@@ -141,6 +144,15 @@ static void do_load(void)
         const char *pass = cJSON_GetStringValue(cJSON_GetObjectItem(mqtt_j, "password"));
         if (pass)
             snprintf(s_config.mqtt.password, sizeof(s_config.mqtt.password), "%s", pass);
+        cJSON *had_j = cJSON_GetObjectItem(mqtt_j, "ha_discovery_enabled");
+        if (cJSON_IsBool(had_j))
+            s_config.mqtt.ha_discovery_enabled = cJSON_IsTrue(had_j);
+        const char *ha_pfx = cJSON_GetStringValue(cJSON_GetObjectItem(mqtt_j, "ha_prefix"));
+        if (ha_pfx && ha_pfx[0])
+            snprintf(s_config.mqtt.ha_prefix, sizeof(s_config.mqtt.ha_prefix), "%s", ha_pfx);
+        const char *mq_pfx = cJSON_GetStringValue(cJSON_GetObjectItem(mqtt_j, "mqtt_prefix"));
+        if (mq_pfx && mq_pfx[0])
+            snprintf(s_config.mqtt.mqtt_prefix, sizeof(s_config.mqtt.mqtt_prefix), "%s", mq_pfx);
     }
 
     cJSON *radio_j = cJSON_GetObjectItem(root, "radio");
@@ -189,6 +201,25 @@ static void do_load(void)
             ch->feedback_timeout_s = cJSON_IsNumber(ft_j)
                 ? (uint16_t)cJSON_GetNumberValue(ft_j) : 120;
 
+            cJSON *dc_j = cJSON_GetObjectItem(item, "device_class");
+            ch->device_class = cJSON_IsNumber(dc_j)
+                ? (cosmo_channel_device_class_t)(int)cJSON_GetNumberValue(dc_j)
+                : CHANNEL_DEVICE_CLASS_SHUTTER;
+
+            const char *mname = cJSON_GetStringValue(cJSON_GetObjectItem(item, "mqtt_name"));
+            if (mname && mname[0]) {
+                snprintf(ch->mqtt_name, sizeof(ch->mqtt_name), "%s", mname);
+            } else {
+                /* Derive default: lowercase name, non-alpha → '_' */
+                size_t ni = 0;
+                for (; ch->name[ni] && ni + 1 < sizeof(ch->mqtt_name); ni++) {
+                    char c = ch->name[ni];
+                    if (c >= 'A' && c <= 'Z') c = (char)(c + 32);
+                    ch->mqtt_name[ni] = ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) ? c : '_';
+                }
+                ch->mqtt_name[ni] = '\0';
+            }
+
             /* is_state_optimistic is runtime-only — always false after a load */
             ch->is_state_optimistic = false;
         }
@@ -230,7 +261,10 @@ void config_init(void)
 {
     s_mutex = xSemaphoreCreateMutex();
     memset(&s_config, 0, sizeof(s_config));
-    s_config.mqtt.port       = 1883;
+    s_config.mqtt.port                  = 1883;
+    s_config.mqtt.ha_discovery_enabled  = true;
+    snprintf(s_config.mqtt.ha_prefix,   sizeof(s_config.mqtt.ha_prefix),   "homeassistant");
+    snprintf(s_config.mqtt.mqtt_prefix, sizeof(s_config.mqtt.mqtt_prefix), "unigtw");
     s_config.radio.enabled   = false;
     s_config.radio.gpio_miso = CONFIG_RADIO_DEFAULT_MISO;
     s_config.radio.gpio_mosi = CONFIG_RADIO_DEFAULT_MOSI;
@@ -244,7 +278,7 @@ void config_init(void)
 
     s_save_timer = xTimerCreate("cfg_save", pdMS_TO_TICKS(5000),
                                 pdFALSE, NULL, save_timer_cb);
-    xTaskCreate(save_task_fn, "cfg_save", 4096, NULL, 5, &s_save_task);
+    xTaskCreate(save_task_fn, "cfg_save", 5196, NULL, 5, &s_save_task);
 }
 
 void config_save_now(void)
@@ -298,14 +332,22 @@ esp_err_t config_set_hostname(const char *hostname)
 
 esp_err_t config_set_mqtt(const char *broker, uint16_t port,
                           const char *username, const char *password,
-                          bool enabled)
+                          bool enabled,
+                          bool ha_discovery_enabled,
+                          const char *ha_prefix,
+                          const char *mqtt_prefix)
 {
     xSemaphoreTake(s_mutex, portMAX_DELAY);
-    s_config.mqtt.enabled = enabled;
-    s_config.mqtt.port    = port ? port : 1883;
-    snprintf(s_config.mqtt.broker,   sizeof(s_config.mqtt.broker),   "%s", broker   ? broker   : "");
-    snprintf(s_config.mqtt.username, sizeof(s_config.mqtt.username), "%s", username ? username : "");
-    snprintf(s_config.mqtt.password, sizeof(s_config.mqtt.password), "%s", password ? password : "");
+    s_config.mqtt.enabled              = enabled;
+    s_config.mqtt.port                 = port ? port : 1883;
+    s_config.mqtt.ha_discovery_enabled = ha_discovery_enabled;
+    snprintf(s_config.mqtt.broker,   sizeof(s_config.mqtt.broker),   "%s", broker      ? broker      : "");
+    snprintf(s_config.mqtt.username, sizeof(s_config.mqtt.username), "%s", username    ? username    : "");
+    snprintf(s_config.mqtt.password, sizeof(s_config.mqtt.password), "%s", password    ? password    : "");
+    snprintf(s_config.mqtt.ha_prefix,   sizeof(s_config.mqtt.ha_prefix),
+             "%s", (ha_prefix   && ha_prefix[0])   ? ha_prefix   : "homeassistant");
+    snprintf(s_config.mqtt.mqtt_prefix, sizeof(s_config.mqtt.mqtt_prefix),
+             "%s", (mqtt_prefix && mqtt_prefix[0]) ? mqtt_prefix : "unigtw");
     xSemaphoreGive(s_mutex);
     mark_dirty();
     return ESP_OK;

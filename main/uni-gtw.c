@@ -9,6 +9,7 @@
 #include "channel.h"
 #include "config.h"
 #include "esp_littlefs.h"
+#include "mqtt.h"
 #include "radio.h"
 #include "webserver.h"
 #include "wifi_manager.h"
@@ -84,6 +85,9 @@ void app_main(void)
         g_radio_state = RADIO_STATE_ERROR;
     else
         g_radio_state = RADIO_STATE_OK;
+
+    /* MQTT init */
+    mqtt_init();
 
     webserver_start_status_timer();
 }
