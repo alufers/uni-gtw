@@ -97,7 +97,7 @@ esp_err_t cosmo_decode(const cosmo_raw_packet_t *raw, cosmo_packet_t *out) {
       extra_payload >>= 1;
     } while (extra_payload != 0);
   }
-  // todo calc parity
+
 
   if (byte0 != byte0_expected) {
     COSMO_LOG("encrypted[0] mismatch (enc=%u expected=%u)", byte0,
@@ -128,12 +128,26 @@ esp_err_t cosmo_encode(const cosmo_packet_t *pkt, cosmo_raw_packet_t *out) {
 
   uint8_t last_byte = (pkt->serial & 0b11100000) | pkt->cmd;
 
-  uint8_t byte0 = last_byte << 2; // TODO add parity of extra data
+  uint8_t byte0 = last_byte << 2;
 
+
+
+  if (pkt->proto == PROTO_COSMO_2WAY) {
+    uint8_t extra_payload_copy = pkt->extra_payload;
+    do {
+      if ((extra_payload_copy & 1) != 0) {
+        byte0++;
+      }
+      extra_payload_copy >>= 1;
+    } while (extra_payload_copy != 0);
+  }
+
+
+  uint8_t byte1 = last_byte >> 6 | out->data[6] << 2;
   /* Build the 32-bit word to encrypt */
   uint32_t plain = ((uint32_t)(byte0) << 24) /* 5-bit cmd */
                    |
-                   ((uint32_t)(last_byte >> 6 | out->data[6] << 2) << 16) /*  */
+                   ((uint32_t)(byte1) << 16) /*  */
                    | pkt->counter; /* 16-bit counter */
 
   uint32_t enc = keeloq_encrypt(plain, KEELOQ_KEY);
