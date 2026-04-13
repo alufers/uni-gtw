@@ -1,3 +1,5 @@
+import { ComponentChildren } from "preact";
+
 interface Tab {
   id: string;
   label: string;
@@ -7,11 +9,13 @@ interface TabsProps {
   tabs: Tab[];
   active: string;
   onChange: (id: string) => void;
+  /** Optional content rendered right-aligned in the tab bar (e.g. a toggle button). */
+  rightSlot?: ComponentChildren;
 }
 
-export function Tabs({ tabs, active, onChange }: TabsProps) {
+export function Tabs({ tabs, active, onChange, rightSlot }: TabsProps) {
   return (
-    <div class="flex border-b border-zinc-800 shrink-0">
+    <div class="flex border-b border-zinc-800 shrink-0 items-stretch">
       {tabs.map((tab) => (
         <button
           key={tab.id}
@@ -25,6 +29,7 @@ export function Tabs({ tabs, active, onChange }: TabsProps) {
           {tab.label}
         </button>
       ))}
+      {rightSlot && <div class="ml-auto flex items-center pr-1">{rightSlot}</div>}
     </div>
   );
 }

@@ -6,6 +6,7 @@
 #include "nvs_flash.h"
 #include "mdns.h"
 
+#include "background_worker.h"
 #include "channel.h"
 #include "config.h"
 #include "esp_littlefs.h"
@@ -50,6 +51,9 @@ void app_main(void)
 
     /* Load persisted config (hostname, mqtt, radio, channels) */
     config_init();
+
+    /* Background worker: deferred saves + periodic position queries */
+    background_worker_init();
 
     /* Init network stack before anything that opens sockets */
     ESP_ERROR_CHECK(esp_netif_init());

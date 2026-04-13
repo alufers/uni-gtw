@@ -1,4 +1,5 @@
 #include "webserver.h"
+#include "background_worker.h"
 #include "channel.h"
 #include "config.h"
 #include "mqtt.h"
@@ -381,6 +382,7 @@ static void ws_dispatch(int fd, const char *text)
         else { cJSON_Delete(root); return; }
 
         channel_send_cmd(serial, cosmo_cmd, extra_payload);
+        background_worker_inhibit_position_query();
 
     } else if (strcmp(cmd, "update_channel") == 0) {
         cJSON *serial_j = cJSON_GetObjectItem(root, "serial");

@@ -1,4 +1,4 @@
-import { Channel } from "./Channels";
+import { Channel } from "./channelTypes";
 
 export type RadioStatus = "ok" | "error" | "not_configured";
 export type MqttStatus = "unconfigured" | "connecting" | "connected" | "disconnected";

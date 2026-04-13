@@ -10,6 +10,7 @@ idf_component_register(
         "radio.c"
         "channel.c"
         "config.c"
+        "background_worker.c"
         "mqtt.c"
     INCLUDE_DIRS "."
     REQUIRES

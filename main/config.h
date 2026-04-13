@@ -43,10 +43,16 @@ typedef struct {
         int  gpio_gdo0;
         int  spi_freq_hz;
     } radio;
+
+    /* Background worker: auto-query motor position every N seconds (0 = disabled) */
+    uint16_t position_status_query_interval_s; /* default: 60 */
 } gateway_config_t;
 
 /* Must be called after LittleFS is mounted */
 void config_init(void);
+
+/* Perform an immediate synchronous config+channel save (called by background_worker). */
+void config_do_save(void);
 
 /* Channel persistence — called by channel.c */
 void config_load_channels(cosmo_channel_t *out, int *out_count);
@@ -68,3 +74,4 @@ esp_err_t config_set_mqtt(const char *broker, uint16_t port,
 esp_err_t config_set_radio(bool enabled,
                            int gpio_miso, int gpio_mosi, int gpio_sck,
                            int gpio_csn, int gpio_gdo0, int spi_freq_hz);
+esp_err_t config_set_position_query_interval(uint16_t interval_s);

@@ -269,7 +269,7 @@ esp_err_t channel_create(const char *name, cosmo_proto_t proto)
              (proto == PROTO_COSMO_2WAY) ? "2way" : "1way");
 
     broadcast_channel_update(&copy);
-    mqtt_publish_channel_update(&copy);
+    mqtt_publish_channel_created(&copy);
     return ESP_OK;
 }
 
@@ -284,6 +284,7 @@ esp_err_t channel_delete(uint32_t serial)
         xSemaphoreGive(s_mutex);
         return ESP_ERR_NOT_FOUND;
     }
+    cosmo_channel_t deleted = s_channels[idx]; /* save before removal */
     for (int i = idx; i < s_channel_count - 1; i++)
         s_channels[i] = s_channels[i + 1];
     s_channel_count--;
@@ -291,6 +292,7 @@ esp_err_t channel_delete(uint32_t serial)
     xSemaphoreGive(s_mutex);
 
     feedback_timer_destroy(serial);
+    mqtt_publish_channel_deleted(&deleted);
 
     ESP_LOGI(TAG, "Deleted channel serial=0x%08X", (unsigned)serial);
     cJSON *root = cJSON_CreateObject();
@@ -312,6 +314,7 @@ esp_err_t channel_update(uint32_t serial, const cosmo_channel_settings_t *s)
         xSemaphoreGive(s_mutex);
         return ESP_ERR_NOT_FOUND;
     }
+    cosmo_channel_t old_ch = *ch; /* capture state before update */
     if (s->name[0])
         snprintf(ch->name, sizeof(ch->name), "%s", s->name);
     ch->proto                  = s->proto;
@@ -335,7 +338,16 @@ esp_err_t channel_update(uint32_t serial, const cosmo_channel_settings_t *s)
              (int)copy.bidirectional_feedback,
              (unsigned)copy.feedback_timeout_s);
     broadcast_channel_update(&copy);
-    mqtt_publish_channel_update(&copy);
+
+    /* Republish HA discovery if any discovery-relevant field changed */
+    bool discovery_changed = (old_ch.device_class != copy.device_class)  ||
+                             (old_ch.proto         != copy.proto)         ||
+                             (strcmp(old_ch.mqtt_name, copy.mqtt_name) != 0) ||
+                             (strcmp(old_ch.name,      copy.name)      != 0);
+    if (discovery_changed)
+        mqtt_republish_channel_discovery(&old_ch, &copy);
+    else
+        mqtt_publish_channel_update(&copy);
     return ESP_OK;
 }
 

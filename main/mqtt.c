@@ -1,4 +1,5 @@
 #include "mqtt.h"
+#include "background_worker.h"
 #include "channel.h"
 #include "config.h"
 
@@ -148,8 +149,13 @@ static char *build_discovery_json(const cosmo_channel_t *ch,
 
         cJSON_AddStringToObject(cover, "command_topic",     cmd_topic);
         cJSON_AddStringToObject(cover, "state_topic",       state_topic);
-        cJSON_AddStringToObject(cover, "position_topic",    pos_topic);
-        cJSON_AddStringToObject(cover, "set_position_topic",set_pos_topic);
+        /* Position control is only available for two-way (feedback) channels */
+        if (ch->proto == PROTO_COSMO_2WAY) {
+            cJSON_AddStringToObject(cover, "position_topic",    pos_topic);
+            cJSON_AddStringToObject(cover, "set_position_topic",set_pos_topic);
+            cJSON_AddNumberToObject(cover, "position_open",     100);
+            cJSON_AddNumberToObject(cover, "position_closed",   0);
+        }
         cJSON_AddStringToObject(cover, "payload_open",      "OPEN");
         cJSON_AddStringToObject(cover, "payload_close",     "CLOSE");
         cJSON_AddStringToObject(cover, "payload_stop",      "STOP");
@@ -157,8 +163,6 @@ static char *build_discovery_json(const cosmo_channel_t *ch,
         cJSON_AddStringToObject(cover, "state_closed",      "closed");
         cJSON_AddStringToObject(cover, "state_opening",     "opening");
         cJSON_AddStringToObject(cover, "state_closing",     "closing");
-        cJSON_AddNumberToObject(cover, "position_open",     100);
-        cJSON_AddNumberToObject(cover, "position_closed",   0);
         cJSON_AddBoolToObject  (cover, "optimistic",        false);
         cJSON_AddItemToObject(cmps, "cover", cover);
 
@@ -236,7 +240,8 @@ static void subscribe_channel(esp_mqtt_client_handle_t client,
     snprintf(topic, sizeof(topic), "%s/%s/command", prefix, ch->mqtt_name);
     esp_mqtt_client_subscribe_single(client, topic, 1);
 
-    if (is_cover_class(ch->device_class)) {
+    /* set_position is only available on two-way cover channels */
+    if (is_cover_class(ch->device_class) && ch->proto == PROTO_COSMO_2WAY) {
         snprintf(topic, sizeof(topic), "%s/%s/set_position", prefix, ch->mqtt_name);
         esp_mqtt_client_subscribe_single(client, topic, 1);
     }
@@ -301,6 +306,46 @@ static void publish_channel_state(esp_mqtt_client_handle_t client,
     }
 }
 
+/* ── Internal helper: publish discovery + subscribe + state for one channel ── */
+
+static void publish_full_channel(esp_mqtt_client_handle_t client,
+                                 const cosmo_channel_t *ch,
+                                 const gateway_config_t *cfg)
+{
+    if (ch->device_class == CHANNEL_DEVICE_CLASS_HIDDEN) return;
+    const char *prefix = cfg->mqtt.mqtt_prefix;
+
+    if (cfg->mqtt.ha_discovery_enabled) {
+        char disc_topic[256];
+        snprintf(disc_topic, sizeof(disc_topic),
+                 "%s/device/%s_%s/config",
+                 cfg->mqtt.ha_prefix, prefix, ch->mqtt_name);
+        char *disc_json = build_discovery_json(ch, cfg);
+        if (disc_json) {
+            esp_mqtt_client_enqueue(client, disc_topic, disc_json, 0, 1, 1, true);
+            free(disc_json);
+        }
+    }
+    subscribe_channel(client, ch, prefix);
+    publish_channel_state(client, ch, prefix);
+}
+
+/* ── Internal helper: clear the HA discovery entry for a channel ─────────── */
+
+static void publish_empty_discovery(esp_mqtt_client_handle_t client,
+                                    const cosmo_channel_t *ch,
+                                    const gateway_config_t *cfg)
+{
+    if (!cfg->mqtt.ha_discovery_enabled) return;
+    const char *prefix = cfg->mqtt.mqtt_prefix;
+    char disc_topic[256];
+    snprintf(disc_topic, sizeof(disc_topic),
+             "%s/device/%s_%s/config",
+             cfg->mqtt.ha_prefix, prefix, ch->mqtt_name);
+    /* Publish empty retained payload — HA will remove the device */
+    esp_mqtt_client_enqueue(client, disc_topic, "", 0, 1, 1, true);
+}
+
 /* ── MQTT event handler ──────────────────────────────────────────────────── */
 
 static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
@@ -331,23 +376,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
         int count = channel_snapshot(channels);
 
         for (int i = 0; i < count; i++) {
-            cosmo_channel_t *ch = &channels[i];
-            if (ch->device_class == CHANNEL_DEVICE_CLASS_HIDDEN) continue;
-
-            if (cfg.mqtt.ha_discovery_enabled) {
-                char disc_topic[256];
-                snprintf(disc_topic, sizeof(disc_topic),
-                         "%s/device/%s_%s/config",
-                         cfg.mqtt.ha_prefix, prefix, ch->mqtt_name);
-                char *disc_json = build_discovery_json(ch, &cfg);
-                if (disc_json) {
-                    esp_mqtt_client_enqueue(client, disc_topic, disc_json, 0, 1, 1, true);
-                    free(disc_json);
-                }
-            }
-
-            subscribe_channel(client, ch, prefix);
-            publish_channel_state(client, ch, prefix);
+            publish_full_channel(client, &channels[i], &cfg);
         }
         break;
     }
@@ -401,12 +430,17 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
                 channel_send_cmd(ch.serial, COSMO_BTN_DOWN, 0);
             else if (strcmp(data, "STOP") == 0)
                 channel_send_cmd(ch.serial, COSMO_BTN_STOP, 0);
+            background_worker_inhibit_position_query();
 
         } else if (strncmp(subtopic, "set_position", (size_t)subtopic_len) == 0) {
-            int pos = atoi(data);
-            if (pos < 0)   pos = 0;
-            if (pos > 100) pos = 100;
-            channel_send_cmd(ch.serial, COSMO_BTN_SET_POSITION, (uint8_t)pos);
+            /* Only honour set_position for two-way (feedback) channels */
+            if (ch.proto == PROTO_COSMO_2WAY) {
+                int pos = atoi(data);
+                if (pos < 0)   pos = 0;
+                if (pos > 100) pos = 100;
+                channel_send_cmd(ch.serial, COSMO_BTN_SET_POSITION, (uint8_t)pos);
+                background_worker_inhibit_position_query();
+            }
         }
         break;
     }
@@ -457,7 +491,7 @@ static void mqtt_do_init(const gateway_config_t *cfg)
         .session.keepalive     = 60,
         .task = {
             .stack_size = 8000,
-        }
+        },
     };
 
     if (cfg->mqtt.username[0]) {
@@ -507,6 +541,8 @@ void mqtt_apply_config(void)
     xSemaphoreGive(s_mutex);
 }
 
+/* ── Public API ──────────────────────────────────────────────────────────── */
+
 void mqtt_publish_channel_update(const cosmo_channel_t *ch)
 {
     if (!ch) return;
@@ -522,4 +558,59 @@ void mqtt_publish_channel_update(const cosmo_channel_t *ch)
     config_get(&cfg);
 
     publish_channel_state(client, ch, cfg.mqtt.mqtt_prefix);
+}
+
+void mqtt_publish_channel_created(const cosmo_channel_t *ch)
+{
+    if (!ch) return;
+
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    esp_mqtt_client_handle_t client = s_client;
+    xSemaphoreGive(s_mutex);
+
+    if (!client || g_mqtt_status != MQTT_STATUS_CONNECTED) return;
+
+    gateway_config_t cfg;
+    config_get(&cfg);
+
+    publish_full_channel(client, ch, &cfg);
+}
+
+void mqtt_publish_channel_deleted(const cosmo_channel_t *ch)
+{
+    if (!ch) return;
+    if (ch->device_class == CHANNEL_DEVICE_CLASS_HIDDEN) return;
+
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    esp_mqtt_client_handle_t client = s_client;
+    xSemaphoreGive(s_mutex);
+
+    if (!client || g_mqtt_status != MQTT_STATUS_CONNECTED) return;
+
+    gateway_config_t cfg;
+    config_get(&cfg);
+
+    publish_empty_discovery(client, ch, &cfg);
+}
+
+void mqtt_republish_channel_discovery(const cosmo_channel_t *old_ch,
+                                      const cosmo_channel_t *new_ch)
+{
+    if (!old_ch || !new_ch) return;
+
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    esp_mqtt_client_handle_t client = s_client;
+    xSemaphoreGive(s_mutex);
+
+    if (!client || g_mqtt_status != MQTT_STATUS_CONNECTED) return;
+
+    gateway_config_t cfg;
+    config_get(&cfg);
+
+    if (cfg.mqtt.ha_discovery_enabled &&
+        old_ch->device_class != CHANNEL_DEVICE_CLASS_HIDDEN) {
+        publish_empty_discovery(client, old_ch, &cfg);
+    }
+
+    publish_full_channel(client, new_ch, &cfg);
 }

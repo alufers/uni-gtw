@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "preact/hooks";
+import { Terminal } from "lucide-preact";
 import { Console } from "./Console";
-import { Channels, Channel } from "./Channels";
+import { Channels } from "./Channels";
+import { Channel } from "./channelTypes";
 import { Settings } from "./Settings";
 import { Tabs } from "./Tabs";
 import { TopBar } from "./TopBar";
@@ -20,6 +22,7 @@ export function App() {
   const [scanResults, setScanResults] = useState<ScanEntry[] | null>(null);
   const [showWifiModal, setShowWifiModal] = useState(false);
   const [activeTab, setActiveTab] = useState("control");
+  const [showConsole, setShowConsole] = useState(false);
   const wifiDismissedRef = useRef(false);
   const lastStatusTimeRef = useRef<number>(0);
 
@@ -57,7 +60,6 @@ export function App() {
     }
   }, [lastJsonMessage]);
 
-  /* Clear stale state on reconnect; add "[disconnected]" on close */
   useEffect(() => {
     if (readyState === ReadyState.OPEN) {
       setLines([]);
@@ -69,7 +71,6 @@ export function App() {
     }
   }, [readyState]);
 
-  /* Force-reconnect if no status message received for >20s while connected */
   useEffect(() => {
     if (readyState !== ReadyState.OPEN) return;
     const interval = setInterval(() => {
@@ -87,6 +88,21 @@ export function App() {
 
   const goToSettings = () => setActiveTab("settings");
 
+  const consoleToggle = (
+    <button
+      onClick={() => setShowConsole((v) => !v)}
+      title={showConsole ? "Hide console" : "Show console"}
+      class={`px-3 py-2 text-xs font-medium border-b-2 cursor-pointer bg-transparent border-l-0 border-r-0 border-t-0 transition-colors flex items-center gap-1.5 ${
+        showConsole
+          ? "border-blue-500 text-blue-400"
+          : "border-transparent text-zinc-400 hover:text-zinc-200 hover:border-zinc-600"
+      }`}
+    >
+      <Terminal size={13} />
+      Console
+    </button>
+  );
+
   return (
     <div class="flex flex-col h-full bg-zinc-950 text-zinc-100 font-mono">
       <TopBar
@@ -99,29 +115,31 @@ export function App() {
         onOpenWifiModal={() => setShowWifiModal(true)}
       />
 
-      {/* Tab bar */}
-      <Tabs tabs={TABS} active={activeTab} onChange={setActiveTab} />
+      {/* Tab bar with console toggle on the right */}
+      <Tabs tabs={TABS} active={activeTab} onChange={setActiveTab} rightSlot={consoleToggle} />
 
-      {/* Main content */}
-      {activeTab === "control" ? (
-        <div class="flex flex-1 overflow-hidden">
-          <div class="w-80 min-w-52 border-r border-zinc-800 overflow-y-auto">
+      {/* Main content + optional console sidebar */}
+      <div class="flex flex-1 overflow-hidden">
+        <div class="flex-1 overflow-hidden">
+          {activeTab === "control" ? (
             <Channels
               channels={channels}
               onSend={sendJsonMessage}
               radioStatus={radioStatus}
               onGoToSettings={goToSettings}
             />
-          </div>
-          <div class="flex-1 overflow-hidden">
+          ) : (
+            <Settings />
+          )}
+        </div>
+
+        {/* Console sidebar — visible on any tab */}
+        {showConsole && (
+          <div class="w-[500px] shrink-0 border-l border-zinc-800 overflow-hidden flex flex-col">
             <Console lines={lines} />
           </div>
-        </div>
-      ) : (
-        <div class="flex-1 overflow-hidden">
-          <Settings />
-        </div>
-      )}
+        )}
+      </div>
 
       {/* WiFi modal */}
       {showWifiModal && (

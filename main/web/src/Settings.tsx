@@ -27,6 +27,7 @@ export interface SettingsData {
   hostname: string;
   mqtt: MqttConfig;
   radio: RadioConfig;
+  position_status_query_interval_s: number;
 }
 
 type SaveStatus = "idle" | "loading" | "saving" | "saved" | "rebooting" | "error";
@@ -415,6 +416,37 @@ export function Settings() {
                 </>
               )}
             </div>
+          </section>
+
+          {/* ── Channel behaviour ────────────────────────────────────────── */}
+          <section class="mb-6">
+            <h3 class="text-xs font-semibold text-zinc-400 mb-3 uppercase tracking-wide">
+              Channel behaviour
+            </h3>
+            <label class="block mb-1 text-xs text-zinc-400">Position query interval (s)</label>
+            <div class="flex items-center gap-2">
+              <input
+                type="number"
+                value={draft.position_status_query_interval_s}
+                min={0}
+                max={65535}
+                onInput={(e) =>
+                  setDraft({
+                    ...draft,
+                    position_status_query_interval_s: Math.min(
+                      65535,
+                      Math.max(0, parseInt((e.target as HTMLInputElement).value) || 0),
+                    ),
+                  })
+                }
+                class="w-28 bg-zinc-800 text-zinc-100 border border-zinc-600 rounded px-2 py-1 text-xs font-mono"
+              />
+              <span class="text-zinc-500 text-xs">seconds (0 = disabled)</span>
+            </div>
+            <p class="text-zinc-600 text-xs mt-1">
+              How often to automatically request position from bidirectional 2-way channels.
+              Inhibited for 45 s after any manual command.
+            </p>
           </section>
 
           {/* ── Save ─────────────────────────────────────────────────────── */}

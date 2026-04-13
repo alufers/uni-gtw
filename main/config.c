@@ -1,4 +1,5 @@
 #include "config.h"
+#include "background_worker.h"
 #include "channel.h"
 
 #include <stdio.h>
@@ -9,17 +10,12 @@
 #include "esp_mac.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
-#include "freertos/timers.h"
-#include "freertos/task.h"
 #include "cJSON.h"
 
 static const char *TAG        = "config";
 static const char *CONFIG_PATH = "/littlefs/config.json";
 
 static SemaphoreHandle_t s_mutex;
-static TimerHandle_t     s_save_timer;
-static TaskHandle_t      s_save_task;
-static TaskHandle_t      s_save_waiter = NULL; /* task to notify after save */
 
 static gateway_config_t s_config;
 static cosmo_channel_t  s_channels[CHANNEL_MAX_COUNT];
@@ -37,45 +33,59 @@ static void set_default_hostname(void)
 
 /* ── File I/O ────────────────────────────────────────────────────────────── */
 
-static void do_save(void)
+void config_do_save(void)
 {
+    cosmo_channel_t *snap = malloc(CHANNEL_MAX_COUNT * sizeof(cosmo_channel_t));
+    gateway_config_t *cfg = malloc(sizeof(gateway_config_t));
+    if (!snap || !cfg) {
+        ESP_LOGE(TAG, "config_do_save: out of memory");
+        free(snap);
+        free(cfg);
+        return;
+    }
+
     xSemaphoreTake(s_mutex, portMAX_DELAY);
     int count = s_channel_count;
-    cosmo_channel_t snap[CHANNEL_MAX_COUNT];
     memcpy(snap, s_channels, (size_t)count * sizeof(cosmo_channel_t));
-    gateway_config_t cfg = s_config;
+    *cfg = s_config;
     xSemaphoreGive(s_mutex);
 
     cJSON *root = cJSON_CreateObject();
 
     cJSON_AddNumberToObject(root, "version",  1);
-    cJSON_AddStringToObject(root, "hostname", cfg.hostname);
+    cJSON_AddStringToObject(root, "hostname", cfg->hostname);
 
     cJSON *mqtt_j = cJSON_CreateObject();
-    cJSON_AddBoolToObject  (mqtt_j, "enabled",              cfg.mqtt.enabled);
-    cJSON_AddStringToObject(mqtt_j, "broker",               cfg.mqtt.broker);
-    cJSON_AddNumberToObject(mqtt_j, "port",                 cfg.mqtt.port);
-    cJSON_AddStringToObject(mqtt_j, "username",             cfg.mqtt.username);
-    cJSON_AddStringToObject(mqtt_j, "password",             cfg.mqtt.password);
-    cJSON_AddBoolToObject  (mqtt_j, "ha_discovery_enabled", cfg.mqtt.ha_discovery_enabled);
-    cJSON_AddStringToObject(mqtt_j, "ha_prefix",            cfg.mqtt.ha_prefix);
-    cJSON_AddStringToObject(mqtt_j, "mqtt_prefix",          cfg.mqtt.mqtt_prefix);
+    cJSON_AddBoolToObject  (mqtt_j, "enabled",              cfg->mqtt.enabled);
+    cJSON_AddStringToObject(mqtt_j, "broker",               cfg->mqtt.broker);
+    cJSON_AddNumberToObject(mqtt_j, "port",                 cfg->mqtt.port);
+    cJSON_AddStringToObject(mqtt_j, "username",             cfg->mqtt.username);
+    cJSON_AddStringToObject(mqtt_j, "password",             cfg->mqtt.password);
+    cJSON_AddBoolToObject  (mqtt_j, "ha_discovery_enabled", cfg->mqtt.ha_discovery_enabled);
+    cJSON_AddStringToObject(mqtt_j, "ha_prefix",            cfg->mqtt.ha_prefix);
+    cJSON_AddStringToObject(mqtt_j, "mqtt_prefix",          cfg->mqtt.mqtt_prefix);
     cJSON_AddItemToObject(root, "mqtt", mqtt_j);
 
     cJSON *radio_j = cJSON_CreateObject();
-    cJSON_AddBoolToObject  (radio_j, "enabled",    cfg.radio.enabled);
-    cJSON_AddNumberToObject(radio_j, "gpio_miso",  cfg.radio.gpio_miso);
-    cJSON_AddNumberToObject(radio_j, "gpio_mosi",  cfg.radio.gpio_mosi);
-    cJSON_AddNumberToObject(radio_j, "gpio_sck",   cfg.radio.gpio_sck);
-    cJSON_AddNumberToObject(radio_j, "gpio_csn",   cfg.radio.gpio_csn);
-    cJSON_AddNumberToObject(radio_j, "gpio_gdo0",  cfg.radio.gpio_gdo0);
-    cJSON_AddNumberToObject(radio_j, "spi_freq_hz",cfg.radio.spi_freq_hz);
+    cJSON_AddBoolToObject  (radio_j, "enabled",    cfg->radio.enabled);
+    cJSON_AddNumberToObject(radio_j, "gpio_miso",  cfg->radio.gpio_miso);
+    cJSON_AddNumberToObject(radio_j, "gpio_mosi",  cfg->radio.gpio_mosi);
+    cJSON_AddNumberToObject(radio_j, "gpio_sck",   cfg->radio.gpio_sck);
+    cJSON_AddNumberToObject(radio_j, "gpio_csn",   cfg->radio.gpio_csn);
+    cJSON_AddNumberToObject(radio_j, "gpio_gdo0",  cfg->radio.gpio_gdo0);
+    cJSON_AddNumberToObject(radio_j, "spi_freq_hz",cfg->radio.spi_freq_hz);
     cJSON_AddItemToObject(root, "radio", radio_j);
+
+    cJSON_AddNumberToObject(root, "position_status_query_interval_s",
+                            cfg->position_status_query_interval_s);
 
     cJSON *arr = cJSON_CreateArray();
     for (int i = 0; i < count; i++)
         cJSON_AddItemToArray(arr, channel_to_cjson(&snap[i]));
     cJSON_AddItemToObject(root, "channels", arr);
+
+    free(snap);
+    free(cfg);
 
     char *str = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
@@ -170,6 +180,10 @@ static void do_load(void)
 #undef LOAD_INT
     }
 
+    cJSON *psqi_j = cJSON_GetObjectItem(root, "position_status_query_interval_s");
+    if (cJSON_IsNumber(psqi_j))
+        s_config.position_status_query_interval_s = (uint16_t)cJSON_GetNumberValue(psqi_j);
+
     cJSON *arr = cJSON_GetObjectItem(root, "channels");
     int count = 0;
     if (cJSON_IsArray(arr)) {
@@ -230,29 +244,11 @@ static void do_load(void)
     ESP_LOGI(TAG, "Loaded config: hostname=%s, %d channels", s_config.hostname, count);
 }
 
-/* ── Save debounce ───────────────────────────────────────────────────────── */
-
-static void save_task_fn(void *arg)
-{
-    while (1) {
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-        do_save();
-        TaskHandle_t waiter = s_save_waiter;
-        s_save_waiter = NULL;
-        if (waiter) xTaskNotifyGive(waiter);
-    }
-}
-
-static void save_timer_cb(TimerHandle_t t)
-{
-    if (s_save_task)
-        xTaskNotifyGive(s_save_task);
-}
+/* ── Internal helpers ────────────────────────────────────────────────────── */
 
 static void mark_dirty(void)
 {
-    if (s_save_timer)
-        xTimerReset(s_save_timer, 0);
+    background_worker_notify_save();
 }
 
 /* ── Public API ──────────────────────────────────────────────────────────── */
@@ -261,8 +257,9 @@ void config_init(void)
 {
     s_mutex = xSemaphoreCreateMutex();
     memset(&s_config, 0, sizeof(s_config));
-    s_config.mqtt.port                  = 1883;
-    s_config.mqtt.ha_discovery_enabled  = true;
+    s_config.mqtt.port                       = 1883;
+    s_config.mqtt.ha_discovery_enabled       = true;
+    s_config.position_status_query_interval_s = 60;
     snprintf(s_config.mqtt.ha_prefix,   sizeof(s_config.mqtt.ha_prefix),   "homeassistant");
     snprintf(s_config.mqtt.mqtt_prefix, sizeof(s_config.mqtt.mqtt_prefix), "unigtw");
     s_config.radio.enabled   = false;
@@ -275,23 +272,12 @@ void config_init(void)
 
     set_default_hostname();
     do_load();
-
-    s_save_timer = xTimerCreate("cfg_save", pdMS_TO_TICKS(5000),
-                                pdFALSE, NULL, save_timer_cb);
-    xTaskCreate(save_task_fn, "cfg_save", 5196, NULL, 5, &s_save_task);
+    /* Save task/timer are owned by background_worker; started after config_init */
 }
 
 void config_save_now(void)
 {
-    if (!s_save_task) return;
-    /* Stop the debounce timer so it doesn't trigger a redundant save later */
-    if (s_save_timer) xTimerStop(s_save_timer, 0);
-    /* Register ourselves as the waiter, kick the save task, then block until
-     * it completes.  do_save() runs on the save task's own 4 KB stack, avoiding
-     * a stack overflow from deep httpd/LittleFS call chains. */
-    s_save_waiter = xTaskGetCurrentTaskHandle();
-    xTaskNotifyGive(s_save_task);
-    ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(10000));
+    background_worker_save_now();
 }
 
 void config_load_channels(cosmo_channel_t *out, int *out_count)
@@ -365,6 +351,15 @@ esp_err_t config_set_radio(bool enabled,
     s_config.radio.gpio_csn   = gpio_csn;
     s_config.radio.gpio_gdo0  = gpio_gdo0;
     s_config.radio.spi_freq_hz = spi_freq_hz ? spi_freq_hz : CONFIG_RADIO_DEFAULT_SPI_FREQ;
+    xSemaphoreGive(s_mutex);
+    mark_dirty();
+    return ESP_OK;
+}
+
+esp_err_t config_set_position_query_interval(uint16_t interval_s)
+{
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    s_config.position_status_query_interval_s = interval_s;
     xSemaphoreGive(s_mutex);
     mark_dirty();
     return ESP_OK;
