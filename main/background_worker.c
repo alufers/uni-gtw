@@ -8,21 +8,14 @@
 
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
 #include "freertos/timers.h"
 
 static const char *TAG = "bg_worker";
 
-/* ── Task / timer handles ────────────────────────────────────────────────── */
+/* ── Timer handles ───────────────────────────────────────────────────────── */
 
-static TaskHandle_t  s_task       = NULL;
-static TimerHandle_t s_save_timer = NULL;
-
-/* Set to the caller's task handle before kicking the task for a sync save. */
-static TaskHandle_t  s_save_waiter = NULL;
-
-/* Set to true when the debounce timer fires (save is due). */
-static volatile bool s_save_pending = false;
+static TimerHandle_t s_save_timer  = NULL; /* one-shot, 5 s debounce        */
+static TimerHandle_t s_query_timer = NULL; /* auto-reload, CHECK_INTERVAL_MS */
 
 /* ── Inhibit state ───────────────────────────────────────────────────────── */
 
@@ -39,9 +32,9 @@ typedef struct {
 
 static query_track_t s_query_track[CHANNEL_MAX_COUNT];
 
-/* ── Wakeup period for the worker loop ───────────────────────────────────── */
+/* ── Wakeup period for the query timer ───────────────────────────────────── */
 
-/* The task wakes at least every CHECK_INTERVAL_MS to check position queries. */
+/* The query timer fires every CHECK_INTERVAL_MS to check for due channels. */
 #define CHECK_INTERVAL_MS 10000
 
 /* ── Helpers ─────────────────────────────────────────────────────────────── */
@@ -132,36 +125,18 @@ static void maybe_query_position(void)
     free(channels);
 }
 
-/* ── Worker task ─────────────────────────────────────────────────────────── */
-
-static void worker_task_fn(void *arg)
-{
-    while (1) {
-        /* Block until notified or timeout */
-        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(CHECK_INTERVAL_MS));
-
-        if (s_save_pending) {
-            s_save_pending = false;
-            config_do_save();
-            /* Wake synchronous waiter if present */
-            TaskHandle_t waiter = s_save_waiter;
-            s_save_waiter = NULL;
-            if (waiter)
-                xTaskNotifyGive(waiter);
-        }
-
-        maybe_query_position();
-    }
-}
-
-/* ── Timer callback ──────────────────────────────────────────────────────── */
+/* ── Timer callbacks (run in FreeRTOS timer daemon task) ─────────────────── */
 
 static void save_timer_cb(TimerHandle_t t)
 {
     (void)t;
-    s_save_pending = true;
-    if (s_task)
-        xTaskNotifyGive(s_task);
+    config_do_save();
+}
+
+static void query_timer_cb(TimerHandle_t t)
+{
+    (void)t;
+    maybe_query_position();
 }
 
 /* ── Public API ──────────────────────────────────────────────────────────── */
@@ -173,7 +148,10 @@ void background_worker_init(void)
     s_save_timer = xTimerCreate("cfg_save", pdMS_TO_TICKS(5000),
                                 pdFALSE, NULL, save_timer_cb);
 
-    xTaskCreate(worker_task_fn, "bg_worker", 6144, NULL, 5, &s_task);
+    s_query_timer = xTimerCreate("pos_query", pdMS_TO_TICKS(CHECK_INTERVAL_MS),
+                                 pdTRUE, NULL, query_timer_cb);
+    if (s_query_timer)
+        xTimerStart(s_query_timer, 0);
 }
 
 void background_worker_notify_save(void)
@@ -184,19 +162,11 @@ void background_worker_notify_save(void)
 
 void background_worker_save_now(void)
 {
-    if (!s_task) {
-        /* Worker not yet initialised — call directly */
-        config_do_save();
-        return;
-    }
     /* Stop debounce timer to avoid a duplicate save */
     if (s_save_timer)
         xTimerStop(s_save_timer, 0);
 
-    s_save_pending  = true;
-    s_save_waiter   = xTaskGetCurrentTaskHandle();
-    xTaskNotifyGive(s_task);
-    ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(10000));
+    config_do_save();
 }
 
 void background_worker_inhibit_position_query(void)

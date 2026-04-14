@@ -4,9 +4,9 @@
  * @brief Initialise the background worker task.
  *
  * Must be called after config_init() and channel_init().
- * Creates the debounce timer and the worker task which handles:
- *   - Deferred config+channel saves (debounced, 5 s)
- *   - Periodic motor position queries (every position_status_query_interval_s)
+ * Creates two FreeRTOS timers (callbacks run in the timer daemon task):
+ *   - Deferred config+channel saves (one-shot debounce, 5 s)
+ *   - Periodic motor position queries (auto-reload, every 10 s check)
  */
 void background_worker_init(void);
 
@@ -18,9 +18,9 @@ void background_worker_init(void);
 void background_worker_notify_save(void);
 
 /**
- * @brief Perform an immediate synchronous save and wait for it to finish.
+ * @brief Perform an immediate synchronous save on the calling task.
  *
- * Blocks the calling task until the save is complete (up to 10 s).
+ * Cancels the debounce timer and calls config_do_save() directly.
  * Use before a planned reboot so dirty state is not lost.
  */
 void background_worker_save_now(void);
