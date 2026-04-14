@@ -3,6 +3,7 @@
 #include "channel.h"
 #include "config.h"
 #include "mqtt.h"
+#include "status_led.h"
 #include "wifi_manager.h"
 
 #include <string.h>
@@ -654,6 +655,20 @@ static void apply_settings_from_json(cJSON *root)
             g_radio_state = RADIO_STATE_OK;
         ESP_LOGI(TAG, "Radio state after apply: %d", (int)g_radio_state);
     }
+
+    /* Position query interval */
+    cJSON *psqi_j = cJSON_GetObjectItem(root, "position_status_query_interval_s");
+    if (cJSON_IsNumber(psqi_j)) {
+        uint16_t iv = (uint16_t)cJSON_GetNumberValue(psqi_j);
+        config_set_position_query_interval(iv);
+    }
+
+    /* Status LED GPIO */
+    cJSON *led_j = cJSON_GetObjectItem(root, "gpio_status_led");
+    if (cJSON_IsNumber(led_j)) {
+        config_set_status_led((int)cJSON_GetNumberValue(led_j));
+        status_led_apply_config();
+    }
 }
 
 static esp_err_t settings_post_handler(httpd_req_t *req)
@@ -682,6 +697,13 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
     apply_settings_from_json(root);
     cJSON_Delete(root);
 
+    return send_config_file(req);
+}
+
+/* ── Backup ──────────────────────────────────────────────────────────────── */
+
+static esp_err_t backup_get_handler(httpd_req_t *req)
+{
     return send_config_file(req);
 }
 
@@ -749,7 +771,7 @@ void webserver_start(void)
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.lru_purge_enable  = true;
-    config.max_uri_handlers  = 10;
+    config.max_uri_handlers  = 12;
     config.stack_size = 6500;
 
     ESP_LOGI(TAG, "Starting HTTP server on port %d", config.server_port);
@@ -788,6 +810,11 @@ void webserver_start(void)
         .method = HTTP_POST,
         .handler = restore_post_handler,
     };
+    static const httpd_uri_t uri_backup_get = {
+        .uri    = "/api/backup",
+        .method = HTTP_GET,
+        .handler = backup_get_handler,
+    };
 
     httpd_register_uri_handler(s_server, &uri_root);
     httpd_register_uri_handler(s_server, &uri_js);
@@ -796,6 +823,7 @@ void webserver_start(void)
     httpd_register_uri_handler(s_server, &uri_settings_get);
     httpd_register_uri_handler(s_server, &uri_settings_post);
     httpd_register_uri_handler(s_server, &uri_restore_post);
+    httpd_register_uri_handler(s_server, &uri_backup_get);
 
     ESP_LOGI(TAG, "HTTP server started");
 }

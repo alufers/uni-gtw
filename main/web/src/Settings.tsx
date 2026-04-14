@@ -28,6 +28,7 @@ export interface SettingsData {
   mqtt: MqttConfig;
   radio: RadioConfig;
   position_status_query_interval_s: number;
+  gpio_status_led: number;
 }
 
 type SaveStatus = "idle" | "loading" | "saving" | "saved" | "rebooting" | "error";
@@ -447,6 +448,37 @@ export function Settings() {
               How often to automatically request position from bidirectional 2-way channels.
               Inhibited for 45 s after any manual command.
             </p>
+          </section>
+
+          {/* ── Status LED ───────────────────────────────────────────────── */}
+          <section class="mb-6">
+            <h3 class="text-xs font-semibold text-zinc-400 mb-3 uppercase tracking-wide">
+              Status LED
+            </h3>
+            <p class="text-zinc-500 text-xs mb-3">
+              GPIO pin for a status LED driven by the LEDC peripheral. Set to{" "}
+              <span class="font-mono text-zinc-400">-1</span> to disable.
+            </p>
+            <div class="flex items-center gap-2">
+              <label class="w-14 shrink-0 text-xs text-zinc-400 text-right">GPIO</label>
+              <input
+                type="number"
+                value={draft.gpio_status_led}
+                min={-1}
+                max={39}
+                onInput={(e) =>
+                  setDraft({
+                    ...draft,
+                    gpio_status_led: Math.max(
+                      -1,
+                      Math.min(39, parseInt((e.target as HTMLInputElement).value) || -1),
+                    ),
+                  })
+                }
+                class="w-20 bg-zinc-800 text-zinc-100 border border-zinc-600 rounded px-2 py-1 text-xs font-mono"
+              />
+              {draft.gpio_status_led < 0 && <span class="text-zinc-500 text-xs">disabled</span>}
+            </div>
           </section>
 
           {/* ── Save ─────────────────────────────────────────────────────── */}

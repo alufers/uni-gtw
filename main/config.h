@@ -46,6 +46,9 @@ typedef struct {
 
     /* Background worker: auto-query motor position every N seconds (0 = disabled) */
     uint16_t position_status_query_interval_s; /* default: 60 */
+
+    /* Status LED GPIO pin; -1 = disabled */
+    int gpio_status_led; /* default: -1 */
 } gateway_config_t;
 
 /* Must be called after LittleFS is mounted */
@@ -75,3 +78,4 @@ esp_err_t config_set_radio(bool enabled,
                            int gpio_miso, int gpio_mosi, int gpio_sck,
                            int gpio_csn, int gpio_gdo0, int spi_freq_hz);
 esp_err_t config_set_position_query_interval(uint16_t interval_s);
+esp_err_t config_set_status_led(int gpio);

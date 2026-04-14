@@ -23,8 +23,8 @@ const RADIO_CHIP: Record<RadioStatus, { label: string; cls: string; clickable: b
   },
 };
 
-const MQTT_CHIP: Record<MqttStatus, { label: string; cls: string } | null> = {
-  unconfigured: null /* hidden — no point showing it when not configured */,
+const MQTT_CHIP: Record<MqttStatus, { label: string; cls: string }> = {
+  unconfigured: { label: "MQTT off", cls: "text-zinc-500 border-zinc-700" },
   connecting: { label: "MQTT connecting", cls: "text-amber-400 border-amber-900" },
   connected: { label: "MQTT", cls: "text-green-400 border-green-900" },
   disconnected: { label: "MQTT disconnected", cls: "text-red-400 border-red-900" },

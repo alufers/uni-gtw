@@ -2,6 +2,7 @@
 #include "cc1101.h"
 #include "config.h"
 #include "cosmo.h"
+#include "status_led.h"
 #include "webserver.h"
 #include "channel.h"
 
@@ -125,6 +126,7 @@ static void radio_handle_rx(void)
         cosmo_packet_to_str(&pkt, pkt_str, sizeof(pkt_str));
         gtw_console_log("PKT %s freq_off=%+d kHz", pkt_str, (int)freq_off_khz);
         channel_update_from_packet(&pkt);
+        status_led_on_rx();
     } else {
         gtw_console_log("RADIO: bad pkt  rssi=%d dBm", (int)rssi_dbm);
     }
@@ -136,6 +138,7 @@ static void radio_do_tx(const cosmo_packet_t *pkt)
 {
     int total = 1 + (int)pkt->repeat;
 
+    status_led_on_tx();
     cc1101_enter_idle();
     cc1101_flush_tx();
     cc1101_flush_rx();

@@ -78,6 +78,7 @@ void config_do_save(void)
 
     cJSON_AddNumberToObject(root, "position_status_query_interval_s",
                             cfg->position_status_query_interval_s);
+    cJSON_AddNumberToObject(root, "gpio_status_led", cfg->gpio_status_led);
 
     cJSON *arr = cJSON_CreateArray();
     for (int i = 0; i < count; i++)
@@ -184,6 +185,10 @@ static void do_load(void)
     if (cJSON_IsNumber(psqi_j))
         s_config.position_status_query_interval_s = (uint16_t)cJSON_GetNumberValue(psqi_j);
 
+    cJSON *led_j = cJSON_GetObjectItem(root, "gpio_status_led");
+    if (cJSON_IsNumber(led_j))
+        s_config.gpio_status_led = (int)cJSON_GetNumberValue(led_j);
+
     cJSON *arr = cJSON_GetObjectItem(root, "channels");
     int count = 0;
     if (cJSON_IsArray(arr)) {
@@ -262,6 +267,7 @@ void config_init(void)
     s_config.position_status_query_interval_s = 60;
     snprintf(s_config.mqtt.ha_prefix,   sizeof(s_config.mqtt.ha_prefix),   "homeassistant");
     snprintf(s_config.mqtt.mqtt_prefix, sizeof(s_config.mqtt.mqtt_prefix), "unigtw");
+    s_config.gpio_status_led = -1;
     s_config.radio.enabled   = false;
     s_config.radio.gpio_miso = CONFIG_RADIO_DEFAULT_MISO;
     s_config.radio.gpio_mosi = CONFIG_RADIO_DEFAULT_MOSI;
@@ -360,6 +366,15 @@ esp_err_t config_set_position_query_interval(uint16_t interval_s)
 {
     xSemaphoreTake(s_mutex, portMAX_DELAY);
     s_config.position_status_query_interval_s = interval_s;
+    xSemaphoreGive(s_mutex);
+    mark_dirty();
+    return ESP_OK;
+}
+
+esp_err_t config_set_status_led(int gpio)
+{
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    s_config.gpio_status_led = gpio;
     xSemaphoreGive(s_mutex);
     mark_dirty();
     return ESP_OK;

@@ -12,6 +12,7 @@
 #include "esp_littlefs.h"
 #include "mqtt.h"
 #include "radio.h"
+#include "status_led.h"
 #include "webserver.h"
 #include "wifi_manager.h"
 
@@ -58,6 +59,9 @@ void app_main(void)
     /* Init network stack before anything that opens sockets */
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
+
+    /* Status LED — must be after event loop, before wifi_manager_init */
+    status_led_init();
 
     webserver_early_init();
     channel_init();

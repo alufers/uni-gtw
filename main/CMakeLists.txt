@@ -12,6 +12,7 @@ idf_component_register(
         "config.c"
         "background_worker.c"
         "mqtt.c"
+        "status_led.c"
     INCLUDE_DIRS "."
     REQUIRES
         esp_wifi
@@ -21,6 +22,7 @@ idf_component_register(
         esp_netif
         esp_driver_spi
         esp_driver_gpio
+        esp_driver_ledc
         esp_hw_support
         esp_timer
         cosmo
