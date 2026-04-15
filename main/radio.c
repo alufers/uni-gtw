@@ -34,6 +34,8 @@ typedef struct {
 
 #define RADIO_QUEUE_DEPTH 8
 
+#define RADIO_RX_CHANNEL 0
+
 static QueueHandle_t     s_radio_queue      = NULL;
 static TaskHandle_t      s_radio_task_handle = NULL;
 static SemaphoreHandle_t s_stop_sem         = NULL;
@@ -94,7 +96,7 @@ static void radio_handle_rx(void)
         ESP_LOGW(TAG, "RX FIFO issue (RXBYTES=0x%02X), flushing", rxbytes);
         cc1101_enter_idle();
         cc1101_flush_rx();
-        cc1101_set_channel(1);
+        cc1101_set_channel(RADIO_RX_CHANNEL);
         cc1101_enter_rx();
         return;
     }
@@ -105,7 +107,7 @@ static void radio_handle_rx(void)
     int8_t  freqest      = cc1101_get_freqest();
     int16_t freq_off_khz = (int16_t)(((int32_t)freqest * 26000) / 16384);
 
-    cc1101_set_channel(1);
+    cc1101_set_channel(RADIO_RX_CHANNEL);
     cc1101_enter_rx();
 
     uint8_t rssi_raw = buf[COSMO_RAW_PACKET_LEN];
@@ -173,7 +175,7 @@ static void radio_do_tx(const cosmo_packet_t *pkt)
     }
 
     cc1101_enter_idle();
-    cc1101_set_channel(1);
+    cc1101_set_channel(RADIO_RX_CHANNEL);
     cc1101_flush_rx();
     cc1101_enter_rx();
 
@@ -278,7 +280,7 @@ static esp_err_t radio_do_init(const radio_hw_cfg_t *hw)
     gpio_isr_handler_add(s_active_gdo0, gdo0_isr, NULL);
 
     xTaskCreate(radio_task, "radio", 4096, NULL, 10, &s_radio_task_handle);
-
+    cc1101_set_channel(RADIO_RX_CHANNEL);
     cc1101_enter_rx();
     s_active_cfg = *hw;
     s_initialized = true;

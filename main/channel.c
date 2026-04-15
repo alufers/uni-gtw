@@ -404,7 +404,42 @@ esp_err_t channel_update(uint32_t serial, const struct ws_update_channel_msg_t *
     return ESP_OK;
 }
 
-/* Map RX feedback packet command to channel state */
+/* Apply optimistic state for a motion command (UP/DOWN/STOP).
+ * Caller must hold config_lock.
+ * Arms or cancels the feedback timer directly (timer ops with timeout=0 are
+ * safe while holding the lock). */
+static void apply_optimistic_cmd(struct cosmo_channel_t *ch, cosmo_cmd_t cmd)
+{
+    bool bidir = (bool)ch->bidirectional_feedback;
+    switch (cmd) {
+    case COSMO_BTN_UP:
+        ch->state               = bidir ? channel_state_t_opening : channel_state_t_open;
+        ch->is_state_optimistic = 1;
+        if (bidir) feedback_timer_arm(ch->serial, (uint16_t)ch->feedback_timeout_s);
+        break;
+    case COSMO_BTN_DOWN:
+        ch->state               = bidir ? channel_state_t_closing : channel_state_t_closed;
+        ch->is_state_optimistic = 1;
+        if (bidir) feedback_timer_arm(ch->serial, (uint16_t)ch->feedback_timeout_s);
+        break;
+    case COSMO_BTN_STOP:
+        if (ch->state == channel_state_t_opening  ||
+            ch->state == channel_state_t_closing  ||
+            ch->state == channel_state_t_in_motion) {
+            ch->state = channel_state_t_partially_open;
+        }
+        ch->is_state_optimistic = 1;
+        feedback_timer_cancel(ch->serial);
+        break;
+    default:
+        break;
+    }
+}
+
+/* Map RX feedback packet command to channel state.
+ * FEEDBACK_IN_MOTION never downgrades a known direction (opening/closing) to
+ * the generic in_motion state — the optimistic direction is kept until a
+ * definitive feedback arrives. */
 static int rx_feedback_state(cosmo_cmd_t cmd, int current)
 {
     switch (cmd) {
@@ -413,7 +448,10 @@ static int rx_feedback_state(cosmo_cmd_t cmd, int current)
     case COSMO_BTN_FEEDBACK_COMFORT:     return channel_state_t_comfort;
     case COSMO_BTN_FEEDBACK_PARTIAL:     return channel_state_t_partially_open;
     case COSMO_BTN_FEEDBACK_OBSTRUCTION: return channel_state_t_obstruction;
-    case COSMO_BTN_FEEDBACK_IN_MOTION:   return channel_state_t_in_motion;
+    case COSMO_BTN_FEEDBACK_IN_MOTION:
+        if (current == channel_state_t_opening || current == channel_state_t_closing)
+            return current;
+        return channel_state_t_in_motion;
     default:                             return current;
     }
 }
@@ -421,16 +459,10 @@ static int rx_feedback_state(cosmo_cmd_t cmd, int current)
 /* Apply received-packet state update to ch (must hold config_lock). */
 static void apply_feedback_to_channel(struct cosmo_channel_t *ch, const cosmo_packet_t *pkt)
 {
-    if (pkt->cmd == COSMO_BTN_FEEDBACK_IN_MOTION &&
-        (ch->state == channel_state_t_opening || ch->state == channel_state_t_closing)) {
-        ch->is_state_optimistic = 0;
-    } else {
-        ch->state               = rx_feedback_state(pkt->cmd, ch->state);
-        ch->is_state_optimistic = 0;
-    }
-
-    ch->rssi         = pkt->rssi;
-    ch->last_seen_ts = (int64_t)time(NULL);
+    ch->state               = rx_feedback_state(pkt->cmd, ch->state);
+    ch->is_state_optimistic = 0;
+    ch->rssi                = pkt->rssi;
+    ch->last_seen_ts        = (int64_t)time(NULL);
 
     if (pkt->cmd == COSMO_BTN_FEEDBACK_PARTIAL) {
         ch->position     = (int16_t)pkt->extra_payload;
@@ -445,104 +477,48 @@ void channel_update_from_packet(const cosmo_packet_t *pkt)
 {
     config_lock();
 
-    /* Check if the packet serial matches an external remote on any channel. */
-    struct cosmo_channel_t *ch_ext = NULL;
-    for (int i = 0; i < g_config.channels_len && !ch_ext; i++) {
-        struct cosmo_channel_t *ch = &g_config.channels[i];
-        for (int j = 0; j < ch->external_remotes_len; j++) {
-            if (ch->external_remotes[j] == pkt->serial) {
-                ch_ext = ch;
-                break;
-            }
-        }
-    }
-
-    if (ch_ext) {
-        /* Packet from an external remote paired to ch_ext's motor. */
-        struct cosmo_channel_t *ch = ch_ext;
-        bool bidir = (bool)ch->bidirectional_feedback;
-        uint32_t ch_serial    = ch->serial;
-        uint16_t ch_timeout_s = (uint16_t)ch->feedback_timeout_s;
-        bool state_changed    = false;
-        bool arm_timer        = false;
-        bool cancel_timer     = false;
-
-        switch (pkt->cmd) {
-        case COSMO_BTN_UP:
-            /* Treat as if we sent UP — optimistic opening/open */
-            ch->state               = bidir ? channel_state_t_opening : channel_state_t_open;
-            ch->is_state_optimistic = 1;
-            ch->rssi                = pkt->rssi;
-            ch->last_seen_ts        = (int64_t)time(NULL);
-            arm_timer               = bidir;
-            state_changed           = true;
-            break;
-        case COSMO_BTN_DOWN:
-            ch->state               = bidir ? channel_state_t_closing : channel_state_t_closed;
-            ch->is_state_optimistic = 1;
-            ch->rssi                = pkt->rssi;
-            ch->last_seen_ts        = (int64_t)time(NULL);
-            arm_timer               = bidir;
-            state_changed           = true;
-            break;
-        case COSMO_BTN_STOP:
-            if (ch->state == channel_state_t_opening  ||
-                ch->state == channel_state_t_closing  ||
-                ch->state == channel_state_t_in_motion) {
-                ch->state = channel_state_t_partially_open;
-            }
-            ch->is_state_optimistic = 1;
-            ch->rssi                = pkt->rssi;
-            ch->last_seen_ts        = (int64_t)time(NULL);
-            cancel_timer            = true;
-            state_changed           = true;
-            break;
-        default:
-            /* Feedback codes addressed to external remote serial —
-             * treat as if they came from the main channel. */
-            if (bidir) {
-                apply_feedback_to_channel(ch, pkt);
-                cancel_timer  = true;
-                state_changed = true;
-            }
-            break;
-        }
-
-        struct cosmo_channel_t copy;
-        channel_deep_copy(&copy, ch);
-        config_unlock();
-
-        if (arm_timer)    feedback_timer_arm(ch_serial, ch_timeout_s);
-        if (cancel_timer) feedback_timer_cancel(ch_serial);
-
-        if (state_changed) {
-            broadcast_channel_update(&copy);
-            mqtt_publish_channel_update(&copy);
-        }
-        cosmo_channel_t_clear(&copy);
-        return;
-    }
-
-    /* Main-channel packet. */
+    /* Look up the channel this packet belongs to.  Try the main serial first;
+     * if not found, scan external_remotes lists on all channels. */
+    bool is_external = false;
     struct cosmo_channel_t *ch = channel_find_locked(pkt->serial);
     if (!ch) {
+        for (int i = 0; i < g_config.channels_len && !ch; i++) {
+            struct cosmo_channel_t *c = &g_config.channels[i];
+            for (int j = 0; j < c->external_remotes_len; j++) {
+                if (c->external_remotes[j] == pkt->serial) {
+                    ch = c;
+                    is_external = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    /* Unknown serial or bidirectional feedback disabled — nothing to do. */
+    if (!ch || !ch->bidirectional_feedback) {
         config_unlock();
         return;
     }
 
-    if (!ch->bidirectional_feedback) {
-        config_unlock();
-        return;
-    }
+    bool is_motion = (pkt->cmd == COSMO_BTN_UP ||
+                      pkt->cmd == COSMO_BTN_DOWN ||
+                      pkt->cmd == COSMO_BTN_STOP);
 
-    uint32_t ch_serial = ch->serial;
-    apply_feedback_to_channel(ch, pkt);
+    if (is_external && is_motion) {
+        /* Motion command from a paired remote control — apply optimistic state.
+         * rssi/last_seen_ts are NOT updated: the packet came from the remote,
+         * not from the motor. */
+        apply_optimistic_cmd(ch, pkt->cmd);
+    } else {
+        /* Feedback from the motor (via main serial or external remote serial). */
+        apply_feedback_to_channel(ch, pkt);
+        feedback_timer_cancel(ch->serial);
+    }
 
     struct cosmo_channel_t copy;
     channel_deep_copy(&copy, ch);
     config_unlock();
 
-    feedback_timer_cancel(ch_serial);
     broadcast_channel_update(&copy);
     mqtt_publish_channel_update(&copy);
     cosmo_channel_t_clear(&copy);
@@ -559,59 +535,15 @@ esp_err_t channel_send_cmd(uint32_t serial, cosmo_cmd_t cmd, uint8_t extra_paylo
 
     ch->counter++;
 
-    if (ch->bidirectional_feedback) {
-        switch (cmd) {
-        case COSMO_BTN_UP:
-            ch->state               = channel_state_t_opening;
-            ch->is_state_optimistic = 1;
-            break;
-        case COSMO_BTN_DOWN:
-            ch->state               = channel_state_t_closing;
-            ch->is_state_optimistic = 1;
-            break;
-        case COSMO_BTN_STOP:
-            if (ch->state == channel_state_t_opening  ||
-                ch->state == channel_state_t_closing  ||
-                ch->state == channel_state_t_in_motion) {
-                ch->state = channel_state_t_partially_open;
-            }
-            ch->is_state_optimistic = 1;
-            break;
-        default:
-            break;
-        }
-    } else {
-        switch (cmd) {
-        case COSMO_BTN_UP:
-            ch->state               = channel_state_t_open;
-            ch->is_state_optimistic = 1;
-            break;
-        case COSMO_BTN_DOWN:
-            ch->state               = channel_state_t_closed;
-            ch->is_state_optimistic = 1;
-            break;
-        default:
-            break;
-        }
-    }
+    apply_optimistic_cmd(ch, cmd);
 
-    uint32_t ch_serial    = ch->serial;
-    uint16_t ch_timeout_s = (uint16_t)ch->feedback_timeout_s;
-    bool     ch_bidir     = (bool)ch->bidirectional_feedback;
-    cosmo_proto_t proto   = channel_proto_to_cosmo(ch->proto);
+    cosmo_proto_t proto = channel_proto_to_cosmo(ch->proto);
 
     struct cosmo_channel_t copy;
     channel_deep_copy(&copy, ch);
     config_unlock();
 
     config_mark_dirty();
-
-    if (ch_bidir) {
-        if (cmd == COSMO_BTN_UP || cmd == COSMO_BTN_DOWN)
-            feedback_timer_arm(ch_serial, ch_timeout_s);
-        else if (cmd == COSMO_BTN_STOP)
-            feedback_timer_cancel(ch_serial);
-    }
 
     cosmo_packet_t pkt = {
         .proto         = proto,
