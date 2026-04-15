@@ -465,8 +465,13 @@ static void apply_feedback_to_channel(struct cosmo_channel_t *ch, const cosmo_pa
     ch->last_seen_ts        = (int64_t)time(NULL);
 
     if (pkt->cmd == COSMO_BTN_FEEDBACK_PARTIAL) {
-        ch->position     = (int16_t)pkt->extra_payload;
-        ch->has_position = 1;
+        if(pkt->proto == PROTO_COSMO_2WAY) {
+            ch->position     = (int16_t)pkt->extra_payload;
+            ch->has_position = 1;
+        } else {
+            ch->has_position = 0;
+        }
+
     } else if (pkt->cmd == COSMO_BTN_FEEDBACK_TOP ||
                pkt->cmd == COSMO_BTN_FEEDBACK_BOTTOM) {
         ch->has_position = 0;
@@ -587,4 +592,3 @@ esp_err_t channel_find_by_mqtt_name(const char *mqtt_name, struct cosmo_channel_
     config_unlock();
     return ESP_ERR_NOT_FOUND;
 }
-

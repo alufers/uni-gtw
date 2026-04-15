@@ -173,15 +173,18 @@ static char *build_discovery_json(const struct cosmo_channel_t *ch,
         cover->state_topic   = sstr(state_topic);
 
         if (is_2way) {
-            cover->has_position_topic     = 1;
+
             cover->has_set_position_topic = 1;
-            cover->has_position_open      = 1;
-            cover->has_position_closed    = 1;
-            cover->position_topic     = sstr(pos_topic);
+
             cover->set_position_topic = sstr(set_pos_topic);
-            cover->position_open   = 100;
-            cover->position_closed = 0;
+
         }
+        cover->has_position_topic     = 1;
+        cover->has_position_open      = 1;
+        cover->has_position_closed    = 1;
+        cover->position_topic     = sstr(pos_topic);
+        cover->position_open   = 100;
+        cover->position_closed = 0;
 
         cover->payload_open  = sstr("OPEN");
         cover->payload_close = sstr("CLOSE");
@@ -290,12 +293,35 @@ static void publish_channel_state(esp_mqtt_client_handle_t client,
             snprintf(topic, sizeof(topic), "%s/%s/state", prefix, sstr_cstr(ch->mqtt_name));
             esp_mqtt_client_enqueue(client, topic, state_str, 0, 0, 1, true);
         }
-        if (ch->has_position) {
-            char val[8];
-            snprintf(val, sizeof(val), "%d", (int)ch->position);
-            snprintf(topic, sizeof(topic), "%s/%s/position", prefix, sstr_cstr(ch->mqtt_name));
-            esp_mqtt_client_enqueue(client, topic, val, 0, 0, 1, true);
+ int pos_val = 0;
+        switch (ch->state) {
+            case channel_state_t_open:
+                pos_val = 100; break;
+
+            case channel_state_t_opening:
+            case channel_state_t_comfort:
+            case channel_state_t_partially_open:
+            case channel_state_t_in_motion:
+            case channel_state_t_closing:
+            if (ch->has_position) {
+                pos_val = ch->position;
+            } else {
+                pos_val = 50;
+            }
+            break;
+            case channel_state_t_closed:
+                    pos_val = 0; break;
+            default: break;
         }
+
+
+
+        char val[8];
+        snprintf(val, sizeof(val), "%d", pos_val);
+        snprintf(topic, sizeof(topic), "%s/%s/position", prefix, sstr_cstr(ch->mqtt_name));
+        esp_mqtt_client_enqueue(client, topic, val, 0, 0, 1, true);
+
+
         {
             const char *obs = (ch->state == channel_state_t_obstruction)
                               ? "obstruction" : "clear";
@@ -346,7 +372,11 @@ static void publish_full_channel(esp_mqtt_client_handle_t client,
                  ha_prefix, prefix, sstr_cstr(ch->mqtt_name));
         char *disc_json = build_discovery_json(ch, prefix, ha_prefix, true);
         if (disc_json) {
-            esp_mqtt_client_enqueue(client, disc_topic, disc_json, 0, 1, 1, true);
+            ESP_LOGI(TAG, "Publishingto %s:  %s ", disc_topic, disc_json);
+            int ret = esp_mqtt_client_enqueue(client, disc_topic, disc_json, 0, 1, 1, true);
+            if(ret < 0) {
+                  ESP_LOGE(TAG, "Failed to publish homeassistant device config with error code %d", ret);
+            }
             free(disc_json);
         }
     }
@@ -395,7 +425,10 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
         /* Publish gateway availability */
         char avty_topic[96];
         snprintf(avty_topic, sizeof(avty_topic), "%s/availability", prefix);
-        esp_mqtt_client_enqueue(client, avty_topic, "online", 6, 1, 1, true);
+        int ret = esp_mqtt_client_enqueue(client, avty_topic, "online", 6, 1, 1, true);
+        if(ret < 0) {
+            ESP_LOGE(TAG, "Failed to publish availability with error code %d", ret);
+        }
 
         /* For each non-hidden channel: publish discovery, subscribe, publish state.
          * We snapshot each channel one at a time to avoid holding the lock during I/O. */
@@ -522,6 +555,10 @@ static void mqtt_do_init(const mqtt_active_cfg_t *cfg)
             .msg_len           = 7,
             .qos               = 1,
             .retain            = 1,
+        },
+        .buffer = {
+          .size = 4096,
+          .out_size = 4096,
         },
         .session.keepalive     = 60,
         .task.stack_size       = 8000,

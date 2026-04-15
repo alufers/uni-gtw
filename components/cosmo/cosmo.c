@@ -68,8 +68,11 @@ static esp_err_t cosmo_decode_proto(const cosmo_raw_packet_t *raw, cosmo_packet_
                   (last_byte & 0b11100000);
 
     /* Extra payload (2-way only) */
-    if (is_2way)
+    if (is_2way) {
       out->extra_payload = raw->data[7];
+    } else {
+      out->extra_payload = 0;
+    }
 
     /* Verify serial_cmd_byte (data[8] for 2-way, data[7] for 1-way):
      * bits[5:3] = serial_lo[2:0], bits[2:0] = cmd low 3 bits */
