@@ -37,3 +37,4 @@ esp_err_t channel_find_by_mqtt_name(const char *mqtt_name, struct cosmo_channel_
 /* Deep-copy src into dst. dst must not be previously initialised (or must be cleared first).
  * Caller must cosmo_channel_t_clear(dst) when done with it. */
 void channel_deep_copy(struct cosmo_channel_t *dst, const struct cosmo_channel_t *src);
+

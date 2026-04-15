@@ -1,6 +1,11 @@
-import { useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
+import { X, Plus, Radio } from "lucide-preact";
 import { Button } from "./Button";
 import { Channel, DeviceClass, DEVICE_CLASS_OPTIONS, toMqttName } from "./channelTypes";
+import { PacketInfo } from "./wsTypes";
+
+// cosmo_cmd_t values for motion commands
+const MOTION_CMDS = new Set([1, 2, 4]); // STOP=1, UP=2, DOWN=4
 
 interface ChannelFormProps {
   /** undefined → create mode; defined → edit mode */
@@ -13,11 +18,14 @@ interface ChannelFormProps {
     force_tilt_support?: boolean;
     bidirectional_feedback?: boolean;
     feedback_timeout_s?: number;
+    external_remotes?: number[];
   }) => void;
   onCancel: () => void;
+  /** Latest packet_rx from the WebSocket — used for the add-remote listening mode */
+  lastPacketRx?: PacketInfo | null;
 }
 
-export function ChannelForm({ channel, onSubmit, onCancel }: ChannelFormProps) {
+export function ChannelForm({ channel, onSubmit, onCancel, lastPacketRx }: ChannelFormProps) {
   const isEdit = channel !== undefined;
   const [name, setName] = useState(channel?.name ?? "");
   const [proto, setProto] = useState<"1way" | "2way">(channel?.proto ?? "1way");
@@ -27,6 +35,27 @@ export function ChannelForm({ channel, onSubmit, onCancel }: ChannelFormProps) {
   const [deviceClass, setDeviceClass] = useState<DeviceClass>(channel?.device_class ?? "shutter");
   const [mqttName, setMqttName] = useState(channel?.mqtt_name ?? toMqttName(channel?.name ?? ""));
   const [mqttNameTouched, setMqttNameTouched] = useState(false);
+  const [externalRemotes, setExternalRemotes] = useState<number[]>(channel?.external_remotes ?? []);
+  const [listenMode, setListenMode] = useState(false);
+  const prevPacketRxRef = useRef<PacketInfo | null | undefined>(undefined);
+
+  useEffect(() => {
+    if (!listenMode || !lastPacketRx) return;
+    if (lastPacketRx === prevPacketRxRef.current) return;
+    prevPacketRxRef.current = lastPacketRx;
+
+    if (!lastPacketRx.valid || lastPacketRx.serial === undefined) return;
+    if (!MOTION_CMDS.has(lastPacketRx.cmd ?? -1)) return;
+    if (lastPacketRx.serial === channel?.serial) return;
+    if (externalRemotes.includes(lastPacketRx.serial)) return;
+
+    setExternalRemotes((prev) => [...prev, lastPacketRx.serial!]);
+    setListenMode(false);
+  }, [lastPacketRx, listenMode, externalRemotes, channel]);
+
+  const handleRemoveRemote = (remoteSerial: number) => {
+    setExternalRemotes((prev) => prev.filter((s) => s !== remoteSerial));
+  };
 
   const handleNameChange = (newName: string) => {
     setName(newName);
@@ -53,6 +82,7 @@ export function ChannelForm({ channel, onSubmit, onCancel }: ChannelFormProps) {
         force_tilt_support: forceTilt,
         bidirectional_feedback: bidirFeedback,
         feedback_timeout_s: feedbackTimeout,
+        external_remotes: externalRemotes,
       }),
     });
   };
@@ -155,6 +185,59 @@ export function ChannelForm({ channel, onSubmit, onCancel }: ChannelFormProps) {
             />
           </div>
         </>
+      )}
+
+      {isEdit && (
+        <div class="mb-2">
+          <label class="block text-zinc-500 text-[10px] uppercase tracking-wide mb-1">
+            External remotes
+          </label>
+
+          {externalRemotes.length > 0 && (
+            <div class="flex flex-col gap-0.5 mb-1">
+              {externalRemotes.map((serial) => (
+                <div
+                  key={serial}
+                  class="flex items-center justify-between bg-zinc-800 rounded px-2 py-1 text-xs font-mono"
+                >
+                  <span class="text-zinc-300">
+                    0x{serial.toString(16).toUpperCase().padStart(8, "0")}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => handleRemoveRemote(serial)}
+                    class="text-zinc-500 hover:text-red-400 transition-colors cursor-pointer bg-transparent border-0 p-0 flex items-center"
+                    title="Remove remote"
+                  >
+                    <X size={12} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {listenMode ? (
+            <div class="flex flex-col gap-1">
+              <div class="flex items-center gap-1.5 text-xs text-amber-300 bg-amber-950 border border-amber-800 rounded px-2 py-1.5">
+                <Radio size={12} class="shrink-0 animate-pulse" />
+                Press any button on the remote paired to this motor…
+              </div>
+              <Button onClick={() => setListenMode(false)} class="w-full text-xs">
+                Cancel
+              </Button>
+            </div>
+          ) : (
+            <Button
+              onClick={() => {
+                prevPacketRxRef.current = lastPacketRx;
+                setListenMode(true);
+              }}
+              class="w-full text-xs flex items-center justify-center gap-1"
+            >
+              <Plus size={12} /> Add remote
+            </Button>
+          )}
+        </div>
       )}
 
       <div class="flex gap-1">

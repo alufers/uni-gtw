@@ -20,6 +20,7 @@ import { Modal } from "./Modal";
 import { ChannelForm } from "./ChannelForm";
 import { rssiToSignalIcon } from "./icons";
 import { Channel, ChannelState } from "./channelTypes";
+import { PacketInfo } from "./wsTypes";
 
 /* ── State display ───────────────────────────────────────────────────────── */
 
@@ -213,9 +214,10 @@ function LightSwitchControls({ sendCmd }: { sendCmd: (cmd: string) => void }) {
 interface ChannelCardProps {
   ch: Channel;
   onSend: (msg: object) => void;
+  lastPacketRx: PacketInfo | null;
 }
 
-export function ChannelCard({ ch, onSend }: ChannelCardProps) {
+export function ChannelCard({ ch, onSend, lastPacketRx }: ChannelCardProps) {
   const [editing, setEditing] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [payloadValues, setPayloadValues] = useState<Record<string, number>>(() =>
@@ -238,6 +240,7 @@ export function ChannelCard({ ch, onSend }: ChannelCardProps) {
     force_tilt_support?: boolean;
     bidirectional_feedback?: boolean;
     feedback_timeout_s?: number;
+    external_remotes?: number[];
   }) => {
     onSend({ cmd: "update_channel", serial: ch.serial, ...data });
     setEditing(false);
@@ -276,7 +279,12 @@ export function ChannelCard({ ch, onSend }: ChannelCardProps) {
 
       {/* Edit form */}
       {editing && (
-        <ChannelForm channel={ch} onSubmit={handleEdit} onCancel={() => setEditing(false)} />
+        <ChannelForm
+          channel={ch}
+          onSubmit={handleEdit}
+          onCancel={() => setEditing(false)}
+          lastPacketRx={lastPacketRx}
+        />
       )}
 
       {/* Controls */}

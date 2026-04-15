@@ -19,10 +19,22 @@ export interface ScanEntry {
   auth: number;
 }
 
+export interface PacketInfo {
+  raw: string;
+  valid: boolean;
+  serial?: number;
+  cmd?: number;
+  proto?: "1way" | "2way";
+  counter?: number;
+  extra_payload?: number;
+}
+
 export type WsMessage =
   | { cmd: "console"; payload: string }
   | { cmd: "channels"; payload: Channel[] }
   | { cmd: "channel_update"; payload: Channel }
   | { cmd: "channel_deleted"; serial: number }
   | { cmd: "status"; payload: StatusPayload }
-  | { cmd: "wifi_scan_result"; payload: ScanEntry[] };
+  | { cmd: "wifi_scan_result"; payload: ScanEntry[] }
+  | { cmd: "packet_rx"; payload: PacketInfo }
+  | { cmd: "packet_tx"; payload: PacketInfo };

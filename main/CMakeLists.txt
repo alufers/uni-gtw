@@ -58,15 +58,39 @@ idf_component_register(
 if(NOT CMAKE_BUILD_EARLY_EXPANSION)
 
     # ── pnpm web build ────────────────────────────────────────────────────────
-    add_custom_target(pnpm_build
+    # Collect frontend source files at configure time so the custom command
+    # only re-runs when they actually change.  Adding a new file requires
+    # re-running cmake (standard CMake GLOB limitation).
+    file(GLOB_RECURSE WEB_SRC_FILES
+        "${WEB_DIR}/src/*.ts"
+        "${WEB_DIR}/src/*.tsx"
+        "${WEB_DIR}/src/*.css"
+        "${WEB_DIR}/index.html"
+    )
+    set(WEB_CONFIG_FILES
+        "${WEB_DIR}/package.json"
+        "${WEB_DIR}/tsconfig.json"
+        "${WEB_DIR}/vite.config.js"
+    )
+
+    set(PNPM_STAMP "${CMAKE_CURRENT_BINARY_DIR}/pnpm_build.stamp")
+
+    # Use a stamp file as the command output so the dist files themselves are
+    # never listed as build targets — that would conflict with IDF's EMBED_FILES
+    # mechanism (which also depends on those files) and create a ninja cycle.
+    # add_dependencies below ensures pnpm runs before the component embeds them.
+    add_custom_command(
+        OUTPUT "${PNPM_STAMP}"
         COMMAND pnpm install --frozen-lockfile
         COMMAND pnpm run build
+        COMMAND "${CMAKE_COMMAND}" -E touch "${PNPM_STAMP}"
         WORKING_DIRECTORY ${WEB_DIR}
-        BYPRODUCTS
-            ${WEB_DIST_DIR}/index.html
-            ${WEB_DIST_DIR}/app.js
-            ${WEB_DIST_DIR}/app.css
+        DEPENDS ${WEB_SRC_FILES} ${WEB_CONFIG_FILES}
+        COMMENT "Building frontend (pnpm)..."
+        VERBATIM
     )
+
+    add_custom_target(pnpm_build DEPENDS "${PNPM_STAMP}")
     add_dependencies(${COMPONENT_LIB} pnpm_build)
 
     # ── Host build of json-gen-c ──────────────────────────────────────────────

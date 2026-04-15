@@ -3,7 +3,7 @@ import { Plus, Settings } from "lucide-preact";
 import { Button } from "./Button";
 import { ChannelCard } from "./ChannelCard";
 import { ChannelForm } from "./ChannelForm";
-import { RadioStatus } from "./wsTypes";
+import { RadioStatus, PacketInfo } from "./wsTypes";
 import { Channel } from "./channelTypes";
 
 /* Re-export Channel type so existing imports in App.tsx / wsTypes.ts work */
@@ -15,9 +15,16 @@ interface ChannelsProps {
   onSend: (msg: object) => void;
   radioStatus: RadioStatus | null;
   onGoToSettings: () => void;
+  lastPacketRx: PacketInfo | null;
 }
 
-export function Channels({ channels, onSend, radioStatus, onGoToSettings }: ChannelsProps) {
+export function Channels({
+  channels,
+  onSend,
+  radioStatus,
+  onGoToSettings,
+  lastPacketRx,
+}: ChannelsProps) {
   const [showForm, setShowForm] = useState(false);
 
   const createChannel = (data: {
@@ -77,7 +84,7 @@ export function Channels({ channels, onSend, radioStatus, onGoToSettings }: Chan
 
         {/* Channel cards */}
         {channels.map((ch) => (
-          <ChannelCard key={ch.serial} ch={ch} onSend={onSend} />
+          <ChannelCard key={ch.serial} ch={ch} onSend={onSend} lastPacketRx={lastPacketRx} />
         ))}
       </div>
     </div>

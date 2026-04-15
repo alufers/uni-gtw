@@ -36,6 +36,7 @@ interface TopBarProps {
   connecting: boolean;
   radioStatus: RadioStatus | null;
   mqttStatus: MqttStatus | null;
+  radioFlash: boolean;
   onGoToSettings: () => void;
   onOpenWifiModal: () => void;
 }
@@ -46,6 +47,7 @@ export function TopBar({
   connecting,
   radioStatus,
   mqttStatus,
+  radioFlash,
   onGoToSettings,
   onOpenWifiModal,
 }: TopBarProps) {
@@ -76,7 +78,7 @@ export function TopBar({
         </Chip>
       )}
 
-      {/* Radio status — not_configured is red and clickable */}
+      {/* Radio status — not_configured is red and clickable; flashes on packet activity */}
       {radioChip &&
         (radioChip.clickable ? (
           <ChipButton
@@ -88,7 +90,10 @@ export function TopBar({
             {radioChip.label}
           </ChipButton>
         ) : (
-          <Chip class={radioChip.cls} title={radioChip.label}>
+          <Chip
+            class={`${radioChip.cls} transition-all duration-150 ${radioFlash ? "brightness-200 scale-105" : ""}`}
+            title={radioChip.label}
+          >
             <Radio size={13} class="shrink-0" />
             {radioChip.label}
           </Chip>

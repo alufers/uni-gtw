@@ -122,7 +122,8 @@ static void radio_handle_rx(void)
     gtw_console_log("RX BIN: %s", bin);
 
     cosmo_packet_t pkt;
-    if (cosmo_decode(&raw, &pkt) == ESP_OK) {
+    esp_err_t decode_err = cosmo_decode(&raw, &pkt);
+    if (decode_err == ESP_OK) {
         char pkt_str[256];
         cosmo_packet_to_str(&pkt, pkt_str, sizeof(pkt_str));
         gtw_console_log("PKT %s freq_off=%+d kHz", pkt_str, (int)freq_off_khz);
@@ -131,6 +132,9 @@ static void radio_handle_rx(void)
     } else {
         gtw_console_log("RADIO: bad pkt  rssi=%d dBm", (int)rssi_dbm);
     }
+    webserver_ws_broadcast_packet(false, raw.data, COSMO_RAW_PACKET_LEN,
+                                  decode_err == ESP_OK,
+                                  decode_err == ESP_OK ? &pkt : NULL);
 }
 
 /* ── TX handling ─────────────────────────────────────────────────────────── */
@@ -145,11 +149,11 @@ static void radio_do_tx(const cosmo_packet_t *pkt)
     cc1101_flush_rx();
     cc1101_set_channel(pkt->proto == PROTO_COSMO_2WAY ? 1 : 0);
 
+    cosmo_raw_packet_t raw;
     for (int i = 0; i < total; i++) {
         if (i > 0)
             vTaskDelay(pdMS_TO_TICKS(400));
 
-        cosmo_raw_packet_t raw;
         cosmo_encode(pkt, &raw);
 
         char bin[COSMO_RAW_PACKET_LEN * 9];
@@ -176,6 +180,9 @@ static void radio_do_tx(const cosmo_packet_t *pkt)
     char pkt_str[128];
     cosmo_packet_to_str(pkt, pkt_str, sizeof(pkt_str));
     gtw_console_log("RADIO: TX x%d  %s", total, pkt_str);
+
+    /* Broadcast packet_tx over WebSocket (use last encoded raw bytes) */
+    webserver_ws_broadcast_packet(true, raw.data, COSMO_RAW_PACKET_LEN, true, pkt);
 }
 
 /* ── Radio task ──────────────────────────────────────────────────────────── */

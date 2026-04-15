@@ -57,6 +57,15 @@ void channel_deep_copy(struct cosmo_channel_t *dst, const struct cosmo_channel_t
     dst->is_state_optimistic   = src->is_state_optimistic;
     dst->device_class          = src->device_class;
     dst->mqtt_name             = sstr_dup(src->mqtt_name);
+
+    if (src->external_remotes_len > 0 && src->external_remotes) {
+        dst->external_remotes = malloc((size_t)src->external_remotes_len * sizeof(uint32_t));
+        if (dst->external_remotes) {
+            memcpy(dst->external_remotes, src->external_remotes,
+                   (size_t)src->external_remotes_len * sizeof(uint32_t));
+            dst->external_remotes_len = src->external_remotes_len;
+        }
+    }
 }
 
 /* ── WS broadcast helpers ────────────────────────────────────────────────── */
@@ -349,6 +358,19 @@ esp_err_t channel_update(uint32_t serial, const struct ws_update_channel_msg_t *
         sstr_append_cstr(ch->mqtt_name, derived);
     }
 
+    /* Replace external_remotes list (edit form always sends the full current list). */
+    free(ch->external_remotes);
+    ch->external_remotes     = NULL;
+    ch->external_remotes_len = 0;
+    if (msg->external_remotes_len > 0 && msg->external_remotes) {
+        ch->external_remotes = malloc((size_t)msg->external_remotes_len * sizeof(uint32_t));
+        if (ch->external_remotes) {
+            memcpy(ch->external_remotes, msg->external_remotes,
+                   (size_t)msg->external_remotes_len * sizeof(uint32_t));
+            ch->external_remotes_len = msg->external_remotes_len;
+        }
+    }
+
     struct cosmo_channel_t copy;
     channel_deep_copy(&copy, ch);
     config_unlock();
@@ -396,22 +418,9 @@ static int rx_feedback_state(cosmo_cmd_t cmd, int current)
     }
 }
 
-void channel_update_from_packet(const cosmo_packet_t *pkt)
+/* Apply received-packet state update to ch (must hold config_lock). */
+static void apply_feedback_to_channel(struct cosmo_channel_t *ch, const cosmo_packet_t *pkt)
 {
-    config_lock();
-    struct cosmo_channel_t *ch = channel_find_locked(pkt->serial);
-    if (!ch) {
-        config_unlock();
-        return;
-    }
-
-    if (!ch->bidirectional_feedback) {
-        config_unlock();
-        return;
-    }
-
-    uint32_t ch_serial = ch->serial;
-
     if (pkt->cmd == COSMO_BTN_FEEDBACK_IN_MOTION &&
         (ch->state == channel_state_t_opening || ch->state == channel_state_t_closing)) {
         ch->is_state_optimistic = 0;
@@ -430,6 +439,104 @@ void channel_update_from_packet(const cosmo_packet_t *pkt)
                pkt->cmd == COSMO_BTN_FEEDBACK_BOTTOM) {
         ch->has_position = 0;
     }
+}
+
+void channel_update_from_packet(const cosmo_packet_t *pkt)
+{
+    config_lock();
+
+    /* Check if the packet serial matches an external remote on any channel. */
+    struct cosmo_channel_t *ch_ext = NULL;
+    for (int i = 0; i < g_config.channels_len && !ch_ext; i++) {
+        struct cosmo_channel_t *ch = &g_config.channels[i];
+        for (int j = 0; j < ch->external_remotes_len; j++) {
+            if (ch->external_remotes[j] == pkt->serial) {
+                ch_ext = ch;
+                break;
+            }
+        }
+    }
+
+    if (ch_ext) {
+        /* Packet from an external remote paired to ch_ext's motor. */
+        struct cosmo_channel_t *ch = ch_ext;
+        bool bidir = (bool)ch->bidirectional_feedback;
+        uint32_t ch_serial    = ch->serial;
+        uint16_t ch_timeout_s = (uint16_t)ch->feedback_timeout_s;
+        bool state_changed    = false;
+        bool arm_timer        = false;
+        bool cancel_timer     = false;
+
+        switch (pkt->cmd) {
+        case COSMO_BTN_UP:
+            /* Treat as if we sent UP — optimistic opening/open */
+            ch->state               = bidir ? channel_state_t_opening : channel_state_t_open;
+            ch->is_state_optimistic = 1;
+            ch->rssi                = pkt->rssi;
+            ch->last_seen_ts        = (int64_t)time(NULL);
+            arm_timer               = bidir;
+            state_changed           = true;
+            break;
+        case COSMO_BTN_DOWN:
+            ch->state               = bidir ? channel_state_t_closing : channel_state_t_closed;
+            ch->is_state_optimistic = 1;
+            ch->rssi                = pkt->rssi;
+            ch->last_seen_ts        = (int64_t)time(NULL);
+            arm_timer               = bidir;
+            state_changed           = true;
+            break;
+        case COSMO_BTN_STOP:
+            if (ch->state == channel_state_t_opening  ||
+                ch->state == channel_state_t_closing  ||
+                ch->state == channel_state_t_in_motion) {
+                ch->state = channel_state_t_partially_open;
+            }
+            ch->is_state_optimistic = 1;
+            ch->rssi                = pkt->rssi;
+            ch->last_seen_ts        = (int64_t)time(NULL);
+            cancel_timer            = true;
+            state_changed           = true;
+            break;
+        default:
+            /* Feedback codes addressed to external remote serial —
+             * treat as if they came from the main channel. */
+            if (bidir) {
+                apply_feedback_to_channel(ch, pkt);
+                cancel_timer  = true;
+                state_changed = true;
+            }
+            break;
+        }
+
+        struct cosmo_channel_t copy;
+        channel_deep_copy(&copy, ch);
+        config_unlock();
+
+        if (arm_timer)    feedback_timer_arm(ch_serial, ch_timeout_s);
+        if (cancel_timer) feedback_timer_cancel(ch_serial);
+
+        if (state_changed) {
+            broadcast_channel_update(&copy);
+            mqtt_publish_channel_update(&copy);
+        }
+        cosmo_channel_t_clear(&copy);
+        return;
+    }
+
+    /* Main-channel packet. */
+    struct cosmo_channel_t *ch = channel_find_locked(pkt->serial);
+    if (!ch) {
+        config_unlock();
+        return;
+    }
+
+    if (!ch->bidirectional_feedback) {
+        config_unlock();
+        return;
+    }
+
+    uint32_t ch_serial = ch->serial;
+    apply_feedback_to_channel(ch, pkt);
 
     struct cosmo_channel_t copy;
     channel_deep_copy(&copy, ch);
@@ -548,3 +655,4 @@ esp_err_t channel_find_by_mqtt_name(const char *mqtt_name, struct cosmo_channel_
     config_unlock();
     return ESP_ERR_NOT_FOUND;
 }
+

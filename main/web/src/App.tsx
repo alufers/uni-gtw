@@ -8,7 +8,14 @@ import { Tabs } from "./Tabs";
 import { TopBar } from "./TopBar";
 import { useJsonWebsocket, ReadyState } from "./useWebsocket";
 import { WifiModal } from "./WifiModal";
-import { WsMessage, StatusPayload, ScanEntry, RadioStatus, MqttStatus } from "./wsTypes";
+import {
+  WsMessage,
+  StatusPayload,
+  ScanEntry,
+  RadioStatus,
+  MqttStatus,
+  PacketInfo,
+} from "./wsTypes";
 
 const TABS = [
   { id: "control", label: "Control" },
@@ -23,8 +30,11 @@ export function App() {
   const [showWifiModal, setShowWifiModal] = useState(false);
   const [activeTab, setActiveTab] = useState("control");
   const [showConsole, setShowConsole] = useState(false);
+  const [radioFlash, setRadioFlash] = useState(false);
+  const [lastPacketRx, setLastPacketRx] = useState<PacketInfo | null>(null);
   const wifiDismissedRef = useRef(false);
   const lastStatusTimeRef = useRef<number>(0);
+  const radioFlashTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const { lastJsonMessage, sendJsonMessage, readyState, forceReconnect } =
     useJsonWebsocket<WsMessage>(`ws://${location.host}/ws`);
@@ -57,6 +67,13 @@ export function App() {
       }
     } else if (lastJsonMessage.cmd === "wifi_scan_result") {
       setScanResults(lastJsonMessage.payload);
+    } else if (lastJsonMessage.cmd === "packet_rx" || lastJsonMessage.cmd === "packet_tx") {
+      if (radioFlashTimeoutRef.current) clearTimeout(radioFlashTimeoutRef.current);
+      setRadioFlash(true);
+      radioFlashTimeoutRef.current = setTimeout(() => setRadioFlash(false), 300);
+      if (lastJsonMessage.cmd === "packet_rx") {
+        setLastPacketRx(lastJsonMessage.payload);
+      }
     }
   }, [lastJsonMessage]);
 
@@ -111,6 +128,7 @@ export function App() {
         connecting={connecting}
         radioStatus={radioStatus}
         mqttStatus={mqttStatus}
+        radioFlash={radioFlash}
         onGoToSettings={goToSettings}
         onOpenWifiModal={() => setShowWifiModal(true)}
       />
@@ -127,6 +145,7 @@ export function App() {
               onSend={sendJsonMessage}
               radioStatus={radioStatus}
               onGoToSettings={goToSettings}
+              lastPacketRx={lastPacketRx}
             />
           ) : (
             <Settings />

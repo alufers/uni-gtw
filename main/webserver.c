@@ -506,6 +506,70 @@ void gtw_console_log(const char *fmt, ...)
     sstr_free(out);
 }
 
+/* ── Packet broadcast ────────────────────────────────────────────────────── */
+
+/* Minimal base64 encoder (no external deps). */
+static void base64_encode_bytes(const uint8_t *src, size_t len, char *dst)
+{
+    static const char tbl[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    size_t out = 0;
+    size_t i = 0;
+    while (i < len) {
+        uint32_t a = i < len ? src[i++] : 0;
+        uint32_t b = i < len ? src[i++] : 0;
+        uint32_t c = i < len ? src[i++] : 0;
+        uint32_t t = (a << 16) | (b << 8) | c;
+        dst[out++] = tbl[(t >> 18) & 0x3F];
+        dst[out++] = tbl[(t >> 12) & 0x3F];
+        dst[out++] = tbl[(t >>  6) & 0x3F];
+        dst[out++] = tbl[(t >>  0) & 0x3F];
+    }
+    size_t mod = len % 3;
+    if (mod == 1) { dst[out - 2] = '='; dst[out - 1] = '='; }
+    else if (mod == 2) { dst[out - 1] = '='; }
+    dst[out] = '\0';
+}
+
+void webserver_ws_broadcast_packet(bool is_tx,
+                                   const uint8_t *raw_bytes, int raw_len,
+                                   bool valid, const cosmo_packet_t *pkt)
+{
+    /* base64-encode the raw bytes (9 bytes → 12 base64 chars + NUL) */
+    char b64[((COSMO_RAW_PACKET_LEN + 2) / 3) * 4 + 1];
+    base64_encode_bytes(raw_bytes, (size_t)raw_len, b64);
+
+    struct ws_server_message_t msg;
+    ws_server_message_t_init(&msg);
+    msg.tag = is_tx ? ws_server_message_t_packet_tx : ws_server_message_t_packet_rx;
+
+    struct ws_packet_info_t *info =
+        is_tx ? &msg.value.packet_tx.payload : &msg.value.packet_rx.payload;
+
+    info->raw   = sstr(b64);
+    info->valid = valid;
+
+    if (valid && pkt) {
+        info->has_serial        = 1;
+        info->serial            = pkt->serial;
+        info->has_cmd           = 1;
+        info->cmd               = (int)pkt->cmd;
+        info->has_proto         = 1;
+        info->proto             = sstr(pkt->proto == PROTO_COSMO_2WAY ? "2way" : "1way");
+        info->has_counter       = 1;
+        info->counter           = pkt->counter;
+        info->has_extra_payload = 1;
+        info->extra_payload     = (int)pkt->extra_payload;
+    }
+
+    sstr_t out = sstr_new();
+    json_marshal_ws_server_message_t(&msg, out);
+    ws_server_message_t_clear(&msg);
+
+    webserver_ws_broadcast_json(sstr_cstr(out));
+    sstr_free(out);
+}
+
 /* ── Settings REST handlers ──────────────────────────────────────────────── */
 
 /* Serialise the current config (excluding channels) and send it.

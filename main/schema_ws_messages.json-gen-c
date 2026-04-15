@@ -46,6 +46,25 @@ struct ws_channel_deleted_msg_t {
     uint32_t serial;
 }
 
+// Packet info — emitted after every RX and TX
+struct ws_packet_info_t {
+    sstr_t raw;               // base64-encoded raw bytes (COSMO_RAW_PACKET_LEN bytes)
+    bool valid;               // true if decoding succeeded
+    nullable uint32_t serial;
+    nullable int cmd;         // cosmo_cmd_t value
+    nullable sstr_t proto;    // "1way" or "2way"
+    nullable uint16_t counter;
+    nullable int extra_payload;
+}
+
+struct ws_packet_rx_msg_t {
+    ws_packet_info_t payload;
+}
+
+struct ws_packet_tx_msg_t {
+    ws_packet_info_t payload;
+}
+
 oneof ws_server_message_t {
     @tag "cmd"
     ws_console_msg_t console;
@@ -54,6 +73,8 @@ oneof ws_server_message_t {
     ws_channel_deleted_msg_t channel_deleted;
     ws_status_msg_t status;
     ws_wifi_scan_result_msg_t wifi_scan_result;
+    ws_packet_rx_msg_t packet_rx;
+    ws_packet_tx_msg_t packet_tx;
 }
 
 // ── Client → server messages ──────────────────────────────────────────────────
@@ -84,6 +105,7 @@ struct ws_update_channel_msg_t {
     optional int feedback_timeout_s;
     optional channel_device_class_t device_class;
     optional sstr_t mqtt_name;
+    uint32_t external_remotes[];  // always replaced when present; edit form always sends the full list
 }
 
 // wifi_scan has no fields beyond the cmd tag

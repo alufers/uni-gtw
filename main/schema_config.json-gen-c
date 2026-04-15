@@ -114,6 +114,7 @@ struct cosmo_channel_t {
     bool is_state_optimistic;
     channel_device_class_t device_class;
     sstr_t mqtt_name;
+    uint32_t external_remotes[];  // serials of physical remotes paired to the same motor
 }
 
 // Top-level persisted config (gateway_config_t in C)

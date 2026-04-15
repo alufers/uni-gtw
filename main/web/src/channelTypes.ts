@@ -41,6 +41,7 @@ export interface Channel {
   is_state_optimistic: boolean;
   device_class: DeviceClass;
   mqtt_name: string;
+  external_remotes: number[];
 }
 
 export const DEVICE_CLASS_OPTIONS: { value: DeviceClass; label: string }[] = [
