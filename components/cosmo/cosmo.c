@@ -42,70 +42,85 @@ static uint32_t keeloq_decrypt(uint32_t data, uint64_t key) {
   return x;
 }
 
+static esp_err_t cosmo_decode_proto(const cosmo_raw_packet_t *raw, cosmo_packet_t *out, cosmo_proto_t proto) {
+    /* Proto: 1-way = 8-byte over-the-air packet
+     *        2-way = 9-byte over-the-air packet Extra byte added at index 7 */
+    int is_2way = proto == PROTO_COSMO_2WAY;
+    uint8_t last_byte = is_2way ? raw->data[8] : raw->data[7];
+
+
+    uint8_t cmd_clear = last_byte & 0b00011111;
+    out->cmd = cmd_clear;
+    /* Decrypt the first 4 bytes (little-endian 32-bit word, data[0]=LSB) */
+    uint32_t enc = (uint32_t)raw->data[0] | ((uint32_t)raw->data[1] << 8) |
+                   ((uint32_t)raw->data[2] << 16) |
+                   ((uint32_t)raw->data[3] << 24);
+    uint32_t dec = keeloq_decrypt(enc, KEELOQ_KEY);
+
+    /* Extract fields from the decrypted word */
+    uint8_t byte0 = (dec >> 24) & 0xFF;
+    uint8_t byte1 = (dec >> 16) & 0xFF;
+    out->counter = (uint16_t)(dec & 0xFFFF);
+
+    /* Assemble 32-bit serial */
+    out->serial = ((uint32_t)raw->data[4] << 24) |
+                  ((uint32_t)raw->data[5] << 16) | ((uint32_t)raw->data[6] << 8) |
+                  (last_byte & 0b11100000);
+
+    /* Extra payload (2-way only) */
+    if (is_2way)
+      out->extra_payload = raw->data[7];
+
+    /* Verify serial_cmd_byte (data[8] for 2-way, data[7] for 1-way):
+     * bits[5:3] = serial_lo[2:0], bits[2:0] = cmd low 3 bits */
+
+    uint8_t byte1_expected = last_byte >> 6 | raw->data[6] << 2;
+
+    if (byte1_expected != byte1) {
+      COSMO_LOG("encrypted[1] does not match (enc=%u expected=%u)", byte1,
+                byte1_expected);
+      return ESP_FAIL;
+    }
+
+    uint8_t byte0_expected = last_byte << 2;
+    if (is_2way) {
+      uint8_t extra_payload = raw->data[7];
+      do {
+        if ((extra_payload & 1) != 0) {
+          byte0_expected++;
+        }
+        extra_payload >>= 1;
+      } while (extra_payload != 0);
+    }
+
+
+    if (byte0 != byte0_expected) {
+      COSMO_LOG("encrypted[0] mismatch (enc=%u expected=%u)", byte0,
+                byte0_expected);
+      return ESP_FAIL;
+    }
+
+    return ESP_OK;
+}
+
 /* ── Decode ──────────────────────────────────────────────────────────────── */
 
 esp_err_t cosmo_decode(const cosmo_raw_packet_t *raw, cosmo_packet_t *out) {
   memset(out, 0, sizeof(*out));
   out->rssi = raw->rssi;
 
-  /* Proto: 1-way = 8-byte OTA packet
-   *        2-way = 9-byte OTA packet Extra byte added at index 7 */
-  int is_2way = (raw->data[8] != 0);
-  uint8_t last_byte = is_2way ? raw->data[8] : raw->data[7];
-  out->proto = is_2way ? PROTO_COSMO_2WAY : PROTO_COSMO_1WAY;
-
-  uint8_t cmd_clear = last_byte & 0b00011111;
-  out->cmd = cmd_clear;
-  /* Decrypt the first 4 bytes (little-endian 32-bit word, data[0]=LSB) */
-  uint32_t enc = (uint32_t)raw->data[0] | ((uint32_t)raw->data[1] << 8) |
-                 ((uint32_t)raw->data[2] << 16) |
-                 ((uint32_t)raw->data[3] << 24);
-  uint32_t dec = keeloq_decrypt(enc, KEELOQ_KEY);
-
-  /* Extract fields from the decrypted word */
-  uint8_t byte0 = (dec >> 24) & 0xFF;
-  uint8_t byte1 = (dec >> 16) & 0xFF;
-  out->counter = (uint16_t)(dec & 0xFFFF);
-
-  /* Assemble 32-bit serial */
-  out->serial = ((uint32_t)raw->data[4] << 24) |
-                ((uint32_t)raw->data[5] << 16) | ((uint32_t)raw->data[6] << 8) |
-                (last_byte & 0b11100000);
-
-  /* Extra payload (2-way only) */
-  if (is_2way)
-    out->extra_payload = raw->data[7];
-
-  /* Verify serial_cmd_byte (data[8] for 2-way, data[7] for 1-way):
-   * bits[5:3] = serial_lo[2:0], bits[2:0] = cmd low 3 bits */
-
-  uint8_t byte1_expected = last_byte >> 6 | raw->data[6] << 2;
-
-  if (byte1_expected != byte1) {
-    COSMO_LOG("encrypted[1] does not match (enc=%u expected=%u)", byte1,
-              byte1_expected);
-    return ESP_FAIL;
+  // Try decoding cosmo 2-way first, if that fails try 1 way
+  if(cosmo_decode_proto(raw, out, PROTO_COSMO_2WAY) == ESP_OK) {
+      out->proto = PROTO_COSMO_2WAY;
+      return ESP_OK;
   }
 
-  uint8_t byte0_expected = last_byte << 2;
-  if (is_2way) {
-    uint8_t extra_payload = raw->data[7];
-    do {
-      if ((extra_payload & 1) != 0) {
-        byte0_expected++;
-      }
-      extra_payload >>= 1;
-    } while (extra_payload != 0);
+  if(cosmo_decode_proto(raw, out, PROTO_COSMO_1WAY) == ESP_OK) {
+      out->proto = PROTO_COSMO_1WAY;
+      return ESP_OK;
   }
 
-
-  if (byte0 != byte0_expected) {
-    COSMO_LOG("encrypted[0] mismatch (enc=%u expected=%u)", byte0,
-              byte0_expected);
-    return ESP_FAIL;
-  }
-
-  return ESP_OK;
+  return ESP_FAIL;
 }
 
 /* ── Encode ──────────────────────────────────────────────────────────────── */
