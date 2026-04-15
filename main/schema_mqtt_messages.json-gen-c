@@ -1,0 +1,121 @@
+// uni-gtw — MQTT / Home Assistant discovery message schema
+// Models the JSON produced by build_discovery_json() in mqtt.c.
+//
+// HA discovery uses a compact JSON with short keys ("dev", "o", "avty", "cmps").
+// @json aliases map those short keys to readable C field names.
+
+// ── Device / origin / availability ───────────────────────────────────────────
+
+struct ha_device_info_t {
+    sstr_t ids[];   // JSON: array of unique device identifiers
+    sstr_t name;
+    sstr_t mf;      // manufacturer
+}
+
+struct ha_origin_info_t {
+    sstr_t name;
+    sstr_t sw;      // software version string
+}
+
+struct ha_availability_entry_t {
+    sstr_t topic;
+    sstr_t payload_available;
+    sstr_t payload_not_available;
+}
+
+// ── Component structs (fields of ha_discovery_cmps_t) ────────────────────────
+
+// Cover component — present for all cover device classes (GENERIC … WINDOW)
+struct ha_cover_component_t {
+    sstr_t p;                           // platform: "cover"
+    sstr_t name;
+    sstr_t unique_id;
+    optional sstr_t device_class;       // omitted for GENERIC
+    sstr_t command_topic;
+    sstr_t state_topic;
+    optional sstr_t position_topic;     // 2-way channels only
+    optional sstr_t set_position_topic; // 2-way channels only
+    optional int position_open;         // 100 — 2-way only
+    optional int position_closed;       // 0   — 2-way only
+    sstr_t payload_open;
+    sstr_t payload_close;
+    sstr_t payload_stop;
+    sstr_t state_open;
+    sstr_t state_closed;
+    sstr_t state_opening;
+    sstr_t state_closing;
+    bool optimistic;
+}
+
+// Obstruction binary sensor — always paired with the cover component
+struct ha_obstruction_component_t {
+    sstr_t p;           // platform: "binary_sensor"
+    sstr_t name;
+    sstr_t unique_id;
+    sstr_t device_class; // "problem"
+    sstr_t state_topic;
+    sstr_t payload_on;   // "obstruction"
+    sstr_t payload_off;  // "clear"
+}
+
+// Switch component — present when device_class == SWITCH
+struct ha_switch_component_t {
+    sstr_t p;           // platform: "switch"
+    sstr_t name;
+    sstr_t unique_id;
+    sstr_t command_topic;
+    sstr_t state_topic;
+    sstr_t payload_on;
+    sstr_t payload_off;
+    sstr_t state_on;
+    sstr_t state_off;
+}
+
+// Light component — present when device_class == LIGHT
+struct ha_light_component_t {
+    sstr_t p;           // platform: "light"
+    sstr_t name;
+    sstr_t unique_id;
+    sstr_t command_topic;
+    sstr_t state_topic;
+    sstr_t payload_on;
+    sstr_t payload_off;
+}
+
+// Signal-strength sensor — present on all non-hidden channels
+struct ha_rssi_sensor_component_t {
+    sstr_t p;                    // platform: "sensor"
+    sstr_t name;
+    sstr_t unique_id;
+    sstr_t device_class;         // "signal_strength"
+    sstr_t state_class;          // "measurement"
+    sstr_t unit_of_measurement;  // "dBm"
+    sstr_t state_topic;
+    sstr_t entity_category;      // "diagnostic"
+}
+
+// ── Components map ────────────────────────────────────────────────────────────
+// The "cmps" JSON object has a fixed set of possible keys, each optional.
+// "switch" is a C keyword, so it uses a @json alias.
+
+struct ha_discovery_cmps_t {
+    optional ha_cover_component_t cover;
+    optional ha_obstruction_component_t obstruction;
+    @json "switch"
+    optional ha_switch_component_t switch_component;
+    optional ha_light_component_t light;
+    optional ha_rssi_sensor_component_t signal_strength;
+}
+
+// ── Top-level discovery message ───────────────────────────────────────────────
+
+struct ha_discovery_msg_t {
+    @json "dev"
+    ha_device_info_t device;
+    @json "o"
+    ha_origin_info_t origin;
+    @json "avty"
+    ha_availability_entry_t availability[];
+    @json "cmps"
+    ha_discovery_cmps_t components;
+}

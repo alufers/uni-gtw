@@ -1,0 +1,128 @@
+// uni-gtw — config schema
+// Defines enums shared across WS and MQTT schemas, the channel struct,
+// and the top-level gateway_config_t persisted to LittleFS.
+
+// ── Enums ─────────────────────────────────────────────────────────────────────
+
+// Matches channel_state_name() strings in channel.c
+enum channel_state_t {
+    unknown,
+    closing,
+    closed,
+    opening,
+    open,
+    comfort,
+    partially_open,
+    obstruction,
+    in_motion
+}
+
+// cmd_name values accepted by the channel_cmd WebSocket message
+enum channel_cmd_name_t {
+    UP,
+    DOWN,
+    STOP,
+    UP_DOWN,
+    STOP_DOWN,
+    STOP_HOLD,
+    PROG,
+    STOP_UP,
+    REQUEST_FEEDBACK,
+    REQUEST_POSITION,
+    SET_POSITION,
+    SET_TILT,
+    TILT_INCREASE,
+    TILT_DECREASE
+}
+
+enum wifi_mode_t {
+    ap,
+    sta
+}
+
+enum radio_status_t {
+    ok,
+    error,
+    not_configured
+}
+
+enum mqtt_status_t {
+    connected,
+    connecting,
+    disconnected,
+    unconfigured
+}
+
+// Matches cosmo_channel_device_class_t in channel.h.
+// Values serialise as strings (e.g. "shutter", "blind").
+// json-gen-c unmarshal also accepts the legacy integer form.
+enum channel_device_class_t {
+    generic,
+    awning,
+    blind,
+    curtain,
+    damper,
+    door,
+    garage,
+    gate,
+    shade,
+    shutter,
+    window,
+    light,
+    switch,
+    hidden
+}
+
+// ── Config sub-structs ────────────────────────────────────────────────────────
+
+struct mqtt_config_t {
+    bool enabled;
+    sstr_t broker;
+    int port;
+    sstr_t username;
+    sstr_t password;
+    bool ha_discovery_enabled;
+    sstr_t ha_prefix;
+    sstr_t mqtt_prefix;
+}
+
+struct radio_config_t {
+    bool enabled;
+    int gpio_miso;
+    int gpio_mosi;
+    int gpio_sck;
+    int gpio_csn;
+    int gpio_gdo0;
+    int spi_freq_hz;
+}
+
+// cosmo_channel_t — serialised by channel_to_cjson()
+// proto is kept as sstr_t ("1way"/"2way" cannot be C identifiers)
+struct cosmo_channel_t {
+    uint32_t serial;
+    sstr_t name;
+    sstr_t proto;
+    uint16_t counter;
+    channel_state_t state;
+    int8_t rssi;
+    int64_t last_seen_ts;
+    nullable int16_t position;  // 0–100 % open; null when 1-way or position unknown
+    bool reports_tilt_support;
+    bool force_tilt_support;
+    bool bidirectional_feedback;
+    uint16_t feedback_timeout_s;
+    bool is_state_optimistic;
+    channel_device_class_t device_class;
+    sstr_t mqtt_name;
+}
+
+// Top-level persisted config (gateway_config_t in C)
+struct gateway_config_t {
+    int version;
+    sstr_t hostname;
+    mqtt_config_t mqtt;
+    radio_config_t radio;
+    int position_status_query_interval_s;
+    int gpio_status_led;
+    cosmo_channel_t channels[];
+}

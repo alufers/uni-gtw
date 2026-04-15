@@ -1,3 +1,6 @@
 [submodule "components/esp_littlefs"]
 	path = components/esp_littlefs
 	url = https://github.com/joltwallet/esp_littlefs.git
+[submodule "libs/json-gen-c"]
+	path = libs/json-gen-c
+	url = https://github.com/zltl/json-gen-c.git

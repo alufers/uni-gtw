@@ -1,0 +1,100 @@
+// uni-gtw — WebSocket message schema
+// Depends on types from schema_config.json-gen-c (included first by schema.json-gen-c)
+
+// ── Server → client payloads ──────────────────────────────────────────────────
+
+struct ws_status_payload_t {
+    int64_t uptime;             // seconds since boot
+    int64_t time;               // Unix timestamp
+    wifi_mode_t wifi_mode;
+    radio_status_t radio_status;
+    mqtt_status_t mqtt_status;
+    nullable int wifi_rssi;     // dBm; null when not in STA mode or no association
+    nullable sstr_t wifi_ssid;
+}
+
+struct wifi_ap_info_t {
+    sstr_t ssid;
+    int rssi;
+    int auth;                   // wifi_auth_mode_t
+}
+
+// Thin wrapper structs so the oneof can inline the payload field name
+
+struct ws_console_msg_t {
+    sstr_t payload;             // accumulated console history string
+}
+
+struct ws_channels_msg_t {
+    cosmo_channel_t payload[];
+}
+
+struct ws_channel_update_msg_t {
+    cosmo_channel_t payload;
+}
+
+struct ws_status_msg_t {
+    ws_status_payload_t payload;
+}
+
+struct ws_wifi_scan_result_msg_t {
+    wifi_ap_info_t payload[];
+}
+
+oneof ws_server_message_t {
+    @tag "cmd"
+    ws_console_msg_t console;
+    ws_channels_msg_t channels;
+    ws_channel_update_msg_t channel_update;
+    ws_status_msg_t status;
+    ws_wifi_scan_result_msg_t wifi_scan_result;
+}
+
+// ── Client → server messages ──────────────────────────────────────────────────
+
+struct ws_create_channel_msg_t {
+    sstr_t name;
+    sstr_t proto;                               // "1way" or "2way"
+    optional channel_device_class_t device_class;
+    optional sstr_t mqtt_name;
+}
+
+struct ws_delete_channel_msg_t {
+    uint32_t serial;
+}
+
+struct ws_channel_cmd_msg_t {
+    uint32_t serial;
+    channel_cmd_name_t cmd_name;
+    optional int extra_payload; // payload byte for SET_POSITION / SET_TILT
+}
+
+struct ws_update_channel_msg_t {
+    uint32_t serial;
+    optional sstr_t name;
+    optional sstr_t proto;
+    optional bool force_tilt_support;
+    optional bool bidirectional_feedback;
+    optional int feedback_timeout_s;
+    optional channel_device_class_t device_class;
+    optional sstr_t mqtt_name;
+}
+
+// wifi_scan has no fields beyond the cmd tag
+struct ws_wifi_scan_msg_t {
+}
+
+struct ws_wifi_set_credentials_msg_t {
+    sstr_t ssid;
+    sstr_t password;
+}
+
+oneof ws_client_message_t {
+    @tag "cmd"
+    ws_create_channel_msg_t create_channel;
+    ws_delete_channel_msg_t delete_channel;
+    ws_channel_cmd_msg_t channel_cmd;
+    ws_update_channel_msg_t update_channel;
+    ws_wifi_scan_msg_t wifi_scan;
+    ws_wifi_set_credentials_msg_t wifi_set_credentials;
+}
