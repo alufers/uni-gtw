@@ -94,7 +94,7 @@ static const uint8_t cc1101_regs[] = {
     CC1101_ADDR,     0x00,
     CC1101_PKTLEN,   0x09,  /* Fixed packet length = 9 bytes */
     CC1101_MDMCFG3,  0x83,
-    CC1101_MDMCFG4,  0x56,
+    CC1101_MDMCFG4,  0x36, // 400kHz filter bandwidth
     CC1101_MDMCFG2,  0x02,
     CC1101_MDMCFG1,  0x22, // Preamble: 4 bytes
     CC1101_MDMCFG0,  0xF8, // Channel spacing: 199.951 kHz
@@ -106,21 +106,20 @@ static const uint8_t cc1101_regs[] = {
     CC1101_AGCCTRL0, 0x91,
     CC1101_WORCTRL,  0xFB,
 
-        CC1101_FREQ2,
-        0x21, // Base frequency: 868.000336 MHz
-        CC1101_FREQ1,
-        0x62,
-        CC1101_FREQ0,
-        0x77,
-
-        CC1101_FSCTRL0, 0x2c, // offset by 70khz
-
+    CC1101_FREQ2,
+    0x21, // Base frequency: 868.149902 MHz
+    CC1101_FREQ1,
+    0x63,
+    CC1101_FREQ0,
+    0xF0,
+        // CC1101_FSCTRL0, 0x2c, // offset by 70khz
 
 
-        CC1101_FSCAL3,      0xE9,
-        CC1101_FSCAL2,      0x2A,
-        CC1101_FSCAL1,      0x00,
-        CC1101_FSCAL0,      0x1F,
+
+        // CC1101_FSCAL3,      0xE9,
+        // CC1101_FSCAL2,      0x2A,
+        // CC1101_FSCAL1,      0x00,
+        // CC1101_FSCAL0,      0x1F,
 
 
     0, 0,  /* terminator */
