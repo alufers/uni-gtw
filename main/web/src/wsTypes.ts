@@ -23,6 +23,6 @@ export type WsMessage =
   | { cmd: "console"; payload: string }
   | { cmd: "channels"; payload: Channel[] }
   | { cmd: "channel_update"; payload: Channel }
-  | { cmd: "channel_deleted"; payload: { serial: number } }
+  | { cmd: "channel_deleted"; serial: number }
   | { cmd: "status"; payload: StatusPayload }
   | { cmd: "wifi_scan_result"; payload: ScanEntry[] };

@@ -250,22 +250,23 @@ void status_led_init(void)
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
                                                wifi_event_handler, NULL));
 
-    gateway_config_t cfg;
-    config_get(&cfg);
+    config_lock();
+    int gpio = g_config.gpio_status_led;
+    config_unlock();
 
-    if (cfg.gpio_status_led >= 0) {
-        led_hw_init(cfg.gpio_status_led);
+    if (gpio >= 0) {
+        led_hw_init(gpio);
         apply_base_state(LED_WIFI_DISCONNECTED);
     }
 
-    ESP_LOGI(TAG, "Status LED init (gpio=%d)", cfg.gpio_status_led);
+    ESP_LOGI(TAG, "Status LED init (gpio=%d)", gpio);
 }
 
 void status_led_apply_config(void)
 {
-    gateway_config_t cfg;
-    config_get(&cfg);
-    int new_gpio = cfg.gpio_status_led;
+    config_lock();
+    int new_gpio = g_config.gpio_status_led;
+    config_unlock();
 
     if (new_gpio == s_gpio) return;
 

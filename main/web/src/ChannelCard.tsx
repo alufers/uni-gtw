@@ -19,7 +19,7 @@ import { Dropdown } from "./Dropdown";
 import { Modal } from "./Modal";
 import { ChannelForm } from "./ChannelForm";
 import { rssiToSignalIcon } from "./icons";
-import { Channel, ChannelState, DEVICE_CLASS_LIGHT, DEVICE_CLASS_SWITCH } from "./channelTypes";
+import { Channel, ChannelState } from "./channelTypes";
 
 /* ── State display ───────────────────────────────────────────────────────── */
 
@@ -233,7 +233,7 @@ export function ChannelCard({ ch, onSend }: ChannelCardProps) {
   const handleEdit = (data: {
     name: string;
     proto: "1way" | "2way";
-    device_class: number;
+    device_class: string;
     mqtt_name: string;
     force_tilt_support?: boolean;
     bidirectional_feedback?: boolean;
@@ -249,8 +249,7 @@ export function ChannelCard({ ch, onSend }: ChannelCardProps) {
   };
 
   const hasTilt = ch.proto === "2way" && (ch.reports_tilt_support || ch.force_tilt_support);
-  const isLightSwitch =
-    ch.device_class === DEVICE_CLASS_LIGHT || ch.device_class === DEVICE_CLASS_SWITCH;
+  const isLightSwitch = ch.device_class === "light" || ch.device_class === "switch";
 
   const dropdownItems = [
     {

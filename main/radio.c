@@ -49,15 +49,16 @@ typedef struct {
 
 static radio_hw_cfg_t s_active_cfg;
 
-static void radio_hw_cfg_from_gw(radio_hw_cfg_t *out, const gateway_config_t *cfg)
+/* Must be called with config_lock() held. */
+static void radio_hw_cfg_from_config(radio_hw_cfg_t *out)
 {
-    out->enabled     = cfg->radio.enabled;
-    out->gpio_miso   = cfg->radio.gpio_miso;
-    out->gpio_mosi   = cfg->radio.gpio_mosi;
-    out->gpio_sck    = cfg->radio.gpio_sck;
-    out->gpio_csn    = cfg->radio.gpio_csn;
-    out->gpio_gdo0   = cfg->radio.gpio_gdo0;
-    out->spi_freq_hz = cfg->radio.spi_freq_hz;
+    out->enabled     = g_config.radio.enabled;
+    out->gpio_miso   = g_config.radio.gpio_miso;
+    out->gpio_mosi   = g_config.radio.gpio_mosi;
+    out->gpio_sck    = g_config.radio.gpio_sck;
+    out->gpio_csn    = g_config.radio.gpio_csn;
+    out->gpio_gdo0   = g_config.radio.gpio_gdo0;
+    out->spi_freq_hz = g_config.radio.spi_freq_hz;
 }
 
 /* ── ISR ─────────────────────────────────────────────────────────────────── */
@@ -233,9 +234,9 @@ static void radio_do_deinit(void)
     ESP_LOGI(TAG, "Radio deinitialized");
 }
 
-static esp_err_t radio_do_init(const gateway_config_t *cfg)
+static esp_err_t radio_do_init(const radio_hw_cfg_t *hw)
 {
-    if (!cfg->radio.enabled) {
+    if (!hw->enabled) {
         ESP_LOGI(TAG, "Radio not enabled in config, skipping init");
         return ESP_ERR_NOT_SUPPORTED;
     }
@@ -247,12 +248,12 @@ static esp_err_t radio_do_init(const gateway_config_t *cfg)
     }
 
     cc1101_config_t cc_cfg = {
-        .gpio_miso   = cfg->radio.gpio_miso,
-        .gpio_mosi   = cfg->radio.gpio_mosi,
-        .gpio_sck    = cfg->radio.gpio_sck,
-        .gpio_csn    = cfg->radio.gpio_csn,
-        .gpio_gdo0   = cfg->radio.gpio_gdo0,
-        .spi_freq_hz = cfg->radio.spi_freq_hz,
+        .gpio_miso   = hw->gpio_miso,
+        .gpio_mosi   = hw->gpio_mosi,
+        .gpio_sck    = hw->gpio_sck,
+        .gpio_csn    = hw->gpio_csn,
+        .gpio_gdo0   = hw->gpio_gdo0,
+        .spi_freq_hz = hw->spi_freq_hz,
     };
 
     esp_err_t err = cc1101_init(&cc_cfg);
@@ -266,13 +267,13 @@ static esp_err_t radio_do_init(const gateway_config_t *cfg)
         gpio_install_isr_service(0);
         s_isr_installed = true;
     }
-    s_active_gdo0 = cfg->radio.gpio_gdo0;
+    s_active_gdo0 = hw->gpio_gdo0;
     gpio_isr_handler_add(s_active_gdo0, gdo0_isr, NULL);
 
     xTaskCreate(radio_task, "radio", 4096, NULL, 10, &s_radio_task_handle);
 
     cc1101_enter_rx();
-    radio_hw_cfg_from_gw(&s_active_cfg, cfg);
+    s_active_cfg = *hw;
     s_initialized = true;
     ESP_LOGI(TAG, "Radio initialised, entering RX");
     return ESP_OK;
@@ -282,18 +283,19 @@ static esp_err_t radio_do_init(const gateway_config_t *cfg)
 
 esp_err_t radio_init(void)
 {
-    gateway_config_t cfg;
-    config_get(&cfg);
-    return radio_do_init(&cfg);
+    radio_hw_cfg_t hw;
+    config_lock();
+    radio_hw_cfg_from_config(&hw);
+    config_unlock();
+    return radio_do_init(&hw);
 }
 
 esp_err_t radio_apply_config(void)
 {
-    gateway_config_t cfg;
-    config_get(&cfg);
-
     radio_hw_cfg_t desired;
-    radio_hw_cfg_from_gw(&desired, &cfg);
+    config_lock();
+    radio_hw_cfg_from_config(&desired);
+    config_unlock();
 
     if (memcmp(&s_active_cfg, &desired, sizeof(desired)) == 0) {
         ESP_LOGI(TAG, "Radio config unchanged, skipping reinit");
@@ -302,7 +304,7 @@ esp_err_t radio_apply_config(void)
 
     ESP_LOGI(TAG, "Radio config changed, reinitializing");
     radio_do_deinit();
-    return radio_do_init(&cfg);
+    return radio_do_init(&desired);
 }
 
 esp_err_t radio_request_tx(const cosmo_packet_t *pkt)

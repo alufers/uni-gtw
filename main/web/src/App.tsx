@@ -47,7 +47,7 @@ export function App() {
         return [...prev, updated];
       });
     } else if (lastJsonMessage.cmd === "channel_deleted") {
-      const { serial } = lastJsonMessage.payload;
+      const { serial } = lastJsonMessage;
       setChannels((prev) => prev.filter((c) => c.serial !== serial));
     } else if (lastJsonMessage.cmd === "status") {
       lastStatusTimeRef.current = Date.now();

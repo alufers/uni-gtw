@@ -9,6 +9,22 @@ export type ChannelState =
   | "obstruction"
   | "in_motion";
 
+export type DeviceClass =
+  | "generic"
+  | "awning"
+  | "blind"
+  | "curtain"
+  | "damper"
+  | "door"
+  | "garage"
+  | "gate"
+  | "shade"
+  | "shutter"
+  | "window"
+  | "light"
+  | "switch"
+  | "hidden";
+
 export interface Channel {
   serial: number;
   name: string;
@@ -23,30 +39,26 @@ export interface Channel {
   bidirectional_feedback: boolean;
   feedback_timeout_s: number;
   is_state_optimistic: boolean;
-  device_class: number /* cosmo_channel_device_class_t integer */;
+  device_class: DeviceClass;
   mqtt_name: string;
 }
 
-export const DEVICE_CLASS_OPTIONS: { value: number; label: string }[] = [
-  { value: 0, label: "Generic" },
-  { value: 1, label: "Awning" },
-  { value: 2, label: "Blind" },
-  { value: 3, label: "Curtain" },
-  { value: 4, label: "Damper" },
-  { value: 5, label: "Door" },
-  { value: 6, label: "Garage" },
-  { value: 7, label: "Gate" },
-  { value: 8, label: "Shade" },
-  { value: 9, label: "Shutter" },
-  { value: 10, label: "Window" },
-  { value: 11, label: "Light (special)" },
-  { value: 12, label: "Switch (special)" },
-  { value: 13, label: "Hidden" },
+export const DEVICE_CLASS_OPTIONS: { value: DeviceClass; label: string }[] = [
+  { value: "generic", label: "Generic" },
+  { value: "awning", label: "Awning" },
+  { value: "blind", label: "Blind" },
+  { value: "curtain", label: "Curtain" },
+  { value: "damper", label: "Damper" },
+  { value: "door", label: "Door" },
+  { value: "garage", label: "Garage" },
+  { value: "gate", label: "Gate" },
+  { value: "shade", label: "Shade" },
+  { value: "shutter", label: "Shutter" },
+  { value: "window", label: "Window" },
+  { value: "light", label: "Light (special)" },
+  { value: "switch", label: "Switch (special)" },
+  { value: "hidden", label: "Hidden" },
 ];
-
-/* device_class values for light and switch */
-export const DEVICE_CLASS_LIGHT = 11;
-export const DEVICE_CLASS_SWITCH = 12;
 
 export function toMqttName(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, "_");

@@ -8,12 +8,7 @@ import { Channel } from "./channelTypes";
 
 /* Re-export Channel type so existing imports in App.tsx / wsTypes.ts work */
 export type { Channel };
-export {
-  DEVICE_CLASS_OPTIONS,
-  toMqttName,
-  DEVICE_CLASS_LIGHT,
-  DEVICE_CLASS_SWITCH,
-} from "./channelTypes";
+export { DEVICE_CLASS_OPTIONS, toMqttName } from "./channelTypes";
 
 interface ChannelsProps {
   channels: Channel[];
@@ -28,7 +23,7 @@ export function Channels({ channels, onSend, radioStatus, onGoToSettings }: Chan
   const createChannel = (data: {
     name: string;
     proto: "1way" | "2way";
-    device_class: number;
+    device_class: string;
     mqtt_name: string;
   }) => {
     onSend({

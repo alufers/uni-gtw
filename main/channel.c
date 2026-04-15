@@ -13,153 +13,116 @@
 #include "esp_log.h"
 #include "esp_random.h"
 #include "freertos/FreeRTOS.h"
-#include "freertos/semphr.h"
 #include "freertos/timers.h"
-#include "cJSON.h"
 
 static const char *TAG = "channel";
 
 /* ── Helpers ─────────────────────────────────────────────────────────────── */
 
-/* Derive a default mqtt_name from channel name: lowercase, non-alphanumeric → '_' */
+/* Derive a default mqtt_name from a channel name: lowercase, non-alphanumeric → '_' */
 static void derive_mqtt_name(const char *name, char *out, size_t out_size)
 {
     size_t i = 0;
     for (; name[i] && i + 1 < out_size; i++) {
         char c = name[i];
         if (c >= 'A' && c <= 'Z') c = (char)(c + 32);
-        if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'))
-            out[i] = c;
-        else
-            out[i] = '_';
+        out[i] = ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) ? c : '_';
     }
     out[i] = '\0';
 }
 
-/* ── State ───────────────────────────────────────────────────────────────── */
+/* Convert the sstr_t proto field to a cosmo_proto_t for the radio layer. */
+static cosmo_proto_t channel_proto_to_cosmo(sstr_t proto)
+{
+    return (sstr_compare_c(proto, "2way") == 0) ? PROTO_COSMO_2WAY : PROTO_COSMO_1WAY;
+}
 
-static cosmo_channel_t   s_channels[CHANNEL_MAX_COUNT];
-static int               s_channel_count = 0;
-static SemaphoreHandle_t s_mutex;
+/* Deep-copy a cosmo_channel_t. Caller must cosmo_channel_t_clear(dst) after use. */
+void channel_deep_copy(struct cosmo_channel_t *dst, const struct cosmo_channel_t *src)
+{
+    cosmo_channel_t_init(dst);
+    dst->serial                = src->serial;
+    dst->name                  = sstr_dup(src->name);
+    dst->proto                 = sstr_dup(src->proto);
+    dst->counter               = src->counter;
+    dst->state                 = src->state;
+    dst->rssi                  = src->rssi;
+    dst->last_seen_ts          = src->last_seen_ts;
+    dst->position              = src->position;
+    dst->has_position          = src->has_position;
+    dst->reports_tilt_support  = src->reports_tilt_support;
+    dst->force_tilt_support    = src->force_tilt_support;
+    dst->bidirectional_feedback = src->bidirectional_feedback;
+    dst->feedback_timeout_s    = src->feedback_timeout_s;
+    dst->is_state_optimistic   = src->is_state_optimistic;
+    dst->device_class          = src->device_class;
+    dst->mqtt_name             = sstr_dup(src->mqtt_name);
+}
+
+/* ── WS broadcast helpers ────────────────────────────────────────────────── */
+
+/* Build and broadcast {"cmd":"channel_update","payload":{...}}.
+ * ch must be a valid pointer to a channel (deep copy, not inside g_config). */
+static void broadcast_channel_update(const struct cosmo_channel_t *ch)
+{
+    sstr_t json = sstr_new();
+    sstr_append_cstr(json, "{\"cmd\":\"channel_update\",\"payload\":");
+    json_marshal_cosmo_channel_t((struct cosmo_channel_t *)ch, json);
+    sstr_append_cstr(json, "}");
+    webserver_ws_broadcast_json(sstr_cstr(json));
+    sstr_free(json);
+}
+
+/* Build and broadcast {"cmd":"channel_deleted","serial":N}. */
+static void broadcast_channel_deleted(uint32_t serial)
+{
+    char buf[64];
+    snprintf(buf, sizeof(buf),
+             "{\"cmd\":\"channel_deleted\",\"serial\":%"PRIu32"}", serial);
+    webserver_ws_broadcast_json(buf);
+}
+
+/* ── Feedback timers ─────────────────────────────────────────────────────── */
 
 typedef struct {
-    uint32_t      serial;   /* 0 = slot unused */
+    uint32_t      serial;
     TimerHandle_t timer;
 } feedback_timer_slot_t;
 
 static feedback_timer_slot_t s_feedback_timers[CHANNEL_MAX_COUNT];
 
-/* Mark channels dirty — caller must hold s_mutex */
-static void channel_mark_dirty(void)
-{
-    cosmo_channel_t snap[CHANNEL_MAX_COUNT];
-    int count = s_channel_count;
-    memcpy(snap, s_channels, (size_t)count * sizeof(cosmo_channel_t));
-    config_save_channels(snap, count); /* debounced write via config module */
-}
-
-/* ── JSON helpers ────────────────────────────────────────────────────────── */
-
-static const char *channel_state_name(cosmo_channel_state_t state)
-{
-    switch (state) {
-    case CHANNEL_STATE_CLOSING:        return "closing";
-    case CHANNEL_STATE_CLOSED:         return "closed";
-    case CHANNEL_STATE_OPENING:        return "opening";
-    case CHANNEL_STATE_OPEN:           return "open";
-    case CHANNEL_STATE_COMFORT:        return "comfort";
-    case CHANNEL_STATE_PARTIALLY_OPEN: return "partially_open";
-    case CHANNEL_STATE_OBSTRUCTION:    return "obstruction";
-    case CHANNEL_STATE_IN_MOTION:      return "in_motion";
-    default:                           return "unknown";
-    }
-}
-
-cJSON *channel_to_cjson(const cosmo_channel_t *ch)
-{
-    cJSON *obj = cJSON_CreateObject();
-    cJSON_AddNumberToObject(obj, "serial",       (double)(uint32_t)ch->serial);
-    cJSON_AddStringToObject(obj, "name",         ch->name);
-    cJSON_AddStringToObject(obj, "proto",        ch->proto == PROTO_COSMO_2WAY ? "2way" : "1way");
-    cJSON_AddNumberToObject(obj, "counter",      (double)ch->counter);
-    cJSON_AddStringToObject(obj, "state",        channel_state_name(ch->state));
-    cJSON_AddNumberToObject(obj, "rssi",         (double)ch->rssi);
-    cJSON_AddNumberToObject(obj, "last_seen_ts", (double)ch->last_seen_ts);
-    if (ch->proto == PROTO_COSMO_2WAY && ch->position >= 0)
-        cJSON_AddNumberToObject(obj, "position", (double)ch->position);
-    else
-        cJSON_AddNullToObject(obj, "position");
-    cJSON_AddBoolToObject(obj, "reports_tilt_support",  ch->reports_tilt_support);
-    cJSON_AddBoolToObject(obj, "force_tilt_support",    ch->force_tilt_support);
-    cJSON_AddBoolToObject(obj, "bidirectional_feedback", ch->bidirectional_feedback);
-    cJSON_AddNumberToObject(obj, "feedback_timeout_s",  (double)ch->feedback_timeout_s);
-    cJSON_AddBoolToObject(obj, "is_state_optimistic",   ch->is_state_optimistic);
-    cJSON_AddNumberToObject(obj, "device_class",        (double)ch->device_class);
-    cJSON_AddStringToObject(obj, "mqtt_name",           ch->mqtt_name);
-    return obj;
-}
-
-/* ── Internal helpers ────────────────────────────────────────────────────── */
-
-/* Caller must hold s_mutex. */
-static cosmo_channel_t *channel_find_locked(uint32_t serial)
-{
-    for (int i = 0; i < s_channel_count; i++)
-        if (s_channels[i].serial == serial)
-            return &s_channels[i];
-    return NULL;
-}
-
-/* State from received feedback packets only. */
-static cosmo_channel_state_t rx_feedback_state(cosmo_cmd_t cmd, cosmo_channel_state_t current)
-{
-    switch (cmd) {
-    case COSMO_BTN_FEEDBACK_TOP:         return CHANNEL_STATE_OPEN;
-    case COSMO_BTN_FEEDBACK_BOTTOM:      return CHANNEL_STATE_CLOSED;
-    case COSMO_BTN_FEEDBACK_COMFORT:     return CHANNEL_STATE_COMFORT;
-    case COSMO_BTN_FEEDBACK_PARTIAL:     return CHANNEL_STATE_PARTIALLY_OPEN;
-    case COSMO_BTN_FEEDBACK_OBSTRUCTION: return CHANNEL_STATE_OBSTRUCTION;
-    case COSMO_BTN_FEEDBACK_IN_MOTION:   return CHANNEL_STATE_IN_MOTION;
-    default:                             return current;
-    }
-}
-
-static void broadcast_channel_update(const cosmo_channel_t *ch)
-{
-    cJSON *root = cJSON_CreateObject();
-    cJSON_AddStringToObject(root, "cmd", "channel_update");
-    cJSON_AddItemToObject(root, "payload", channel_to_cjson(ch));
-    char *json = cJSON_PrintUnformatted(root);
-    cJSON_Delete(root);
-    if (json) { webserver_ws_broadcast_json(json); free(json); }
-}
-
-/* ── Feedback timer ──────────────────────────────────────────────────────── */
-
 static void feedback_timer_cb(TimerHandle_t t)
 {
     uint32_t serial = (uint32_t)(uintptr_t)pvTimerGetTimerID(t);
 
-    xSemaphoreTake(s_mutex, portMAX_DELAY);
-    cosmo_channel_t *ch = channel_find_locked(serial);
-    if (!ch) { xSemaphoreGive(s_mutex); return; }
-
-    if (ch->state == CHANNEL_STATE_OPENING  ||
-        ch->state == CHANNEL_STATE_CLOSING  ||
-        ch->state == CHANNEL_STATE_IN_MOTION) {
-        ch->state = CHANNEL_STATE_PARTIALLY_OPEN;
+    config_lock();
+    struct cosmo_channel_t *ch = NULL;
+    for (int i = 0; i < g_config.channels_len; i++) {
+        if (g_config.channels[i].serial == serial) {
+            ch = &g_config.channels[i];
+            break;
+        }
     }
-    ch->is_state_optimistic = false;
+    if (!ch) { config_unlock(); return; }
 
-    cosmo_channel_t copy = *ch;
-    xSemaphoreGive(s_mutex);
+    if (ch->state == channel_state_t_opening  ||
+        ch->state == channel_state_t_closing  ||
+        ch->state == channel_state_t_in_motion) {
+        ch->state = channel_state_t_partially_open;
+    }
+    ch->is_state_optimistic = 0;
 
-    ESP_LOGI(TAG, "Feedback timer expired for serial=0x%08X, state→partially_open", (unsigned)serial);
+    struct cosmo_channel_t copy;
+    channel_deep_copy(&copy, ch);
+    config_unlock();
+
+    ESP_LOGI(TAG, "Feedback timer expired for serial=0x%08X, state→partially_open",
+             (unsigned)serial);
     broadcast_channel_update(&copy);
     mqtt_publish_channel_update(&copy);
+    cosmo_channel_t_clear(&copy);
 }
 
-/* Find the timer slot for a given serial (any slot), or the first unused slot. */
 static feedback_timer_slot_t *feedback_timer_find_slot(uint32_t serial)
 {
     feedback_timer_slot_t *empty = NULL;
@@ -169,10 +132,9 @@ static feedback_timer_slot_t *feedback_timer_find_slot(uint32_t serial)
         if (!empty && s_feedback_timers[i].serial == 0)
             empty = &s_feedback_timers[i];
     }
-    return empty; /* return first empty slot if serial not found */
+    return empty;
 }
 
-/* Start/restart the feedback guard timer for a channel. */
 static void feedback_timer_arm(uint32_t serial, uint16_t timeout_s)
 {
     if (timeout_s == 0) return;
@@ -188,12 +150,10 @@ static void feedback_timer_arm(uint32_t serial, uint16_t timeout_s)
         if (slot->timer)
             xTimerStart(slot->timer, 0);
     } else {
-        /* xTimerChangePeriod also restarts the timer */
         xTimerChangePeriod(slot->timer, ticks, 0);
     }
 }
 
-/* Stop the timer without deleting it. */
 static void feedback_timer_cancel(uint32_t serial)
 {
     for (int i = 0; i < CHANNEL_MAX_COUNT; i++) {
@@ -204,7 +164,6 @@ static void feedback_timer_cancel(uint32_t serial)
     }
 }
 
-/* Stop and delete the timer; clear the slot. */
 static void feedback_timer_destroy(uint32_t serial)
 {
     for (int i = 0; i < CHANNEL_MAX_COUNT; i++) {
@@ -220,188 +179,274 @@ static void feedback_timer_destroy(uint32_t serial)
     }
 }
 
+/* ── find_locked — caller must hold g_config_mutex ───────────────────────── */
+
+static struct cosmo_channel_t *channel_find_locked(uint32_t serial)
+{
+    for (int i = 0; i < g_config.channels_len; i++)
+        if (g_config.channels[i].serial == serial)
+            return &g_config.channels[i];
+    return NULL;
+}
+
 /* ── Public API ──────────────────────────────────────────────────────────── */
 
 void channel_init(void)
 {
-    s_mutex = xSemaphoreCreateMutex();
-    s_channel_count = 0;
     memset(s_feedback_timers, 0, sizeof(s_feedback_timers));
-    config_load_channels(s_channels, &s_channel_count);
+    /* channels are already loaded by config_init() */
 }
 
-esp_err_t channel_create(const char *name, cosmo_proto_t proto)
+esp_err_t channel_create(const char *name, const char *proto,
+                          int device_class, bool has_device_class,
+                          const char *mqtt_name, bool has_mqtt_name)
 {
-    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    config_lock();
 
-    if (s_channel_count >= CHANNEL_MAX_COUNT) {
-        xSemaphoreGive(s_mutex);
+    if (g_config.channels_len >= CHANNEL_MAX_COUNT) {
+        config_unlock();
         ESP_LOGW(TAG, "channel list full");
         return ESP_ERR_NO_MEM;
     }
 
-    /* Generate a serial number unique within the current channel list */
+    /* Generate a unique serial */
     uint32_t serial;
     do {
         serial = esp_random();
-        serial &= ~0x1F; // last 5 significant bits are always zero
+        serial &= ~0x1Fu;
     } while (channel_find_locked(serial) != NULL);
 
-    cosmo_channel_t *ch = &s_channels[s_channel_count++];
-    memset(ch, 0, sizeof(*ch));
-    ch->bidirectional_feedback = true;
-    ch->feedback_timeout_s     = 120;
-    ch->device_class           = CHANNEL_DEVICE_CLASS_SHUTTER;
-    snprintf(ch->name, sizeof(ch->name), "%s", name ? name : "Unnamed");
-    derive_mqtt_name(ch->name, ch->mqtt_name, sizeof(ch->mqtt_name));
-    ch->proto    = proto;
-    ch->serial   = serial;
-    ch->counter  = 0;
-    ch->state    = CHANNEL_STATE_UNKNOWN;
-    ch->position = -1;
+    /* Grow the channels array */
+    int new_len = g_config.channels_len + 1;
+    struct cosmo_channel_t *arr = realloc(g_config.channels,
+                                           (size_t)new_len * sizeof(struct cosmo_channel_t));
+    if (!arr) {
+        config_unlock();
+        return ESP_ERR_NO_MEM;
+    }
+    g_config.channels = arr;
 
-    cosmo_channel_t copy = *ch;
-    channel_mark_dirty();
-    xSemaphoreGive(s_mutex);
+    struct cosmo_channel_t *ch = &g_config.channels[g_config.channels_len];
+    cosmo_channel_t_init(ch);
+
+    ch->serial                = serial;
+    ch->state                 = channel_state_t_unknown;
+    ch->has_position          = 0;
+    ch->position              = 0;
+    ch->bidirectional_feedback = 1;
+    ch->feedback_timeout_s    = 120;
+    ch->device_class          = has_device_class
+                                 ? device_class
+                                 : channel_device_class_t_shutter;
+    ch->counter               = 0;
+    ch->reports_tilt_support  = 0;
+    ch->force_tilt_support    = 0;
+    ch->is_state_optimistic   = 0;
+
+    ch->name  = sstr(name ? name : "Unnamed");
+    ch->proto = sstr((proto && strcmp(proto, "2way") == 0) ? "2way" : "1way");
+
+    if (has_mqtt_name && mqtt_name && mqtt_name[0]) {
+        ch->mqtt_name = sstr(mqtt_name);
+    } else {
+        char derived[64];
+        derive_mqtt_name(sstr_cstr(ch->name), derived, sizeof(derived));
+        ch->mqtt_name = sstr(derived);
+    }
+
+    g_config.channels_len = new_len;
+
+    struct cosmo_channel_t copy;
+    channel_deep_copy(&copy, ch);
+    config_unlock();
+
+    config_mark_dirty();
 
     ESP_LOGI(TAG, "Created channel \"%s\" serial=0x%08X proto=%s",
-             copy.name, (unsigned)copy.serial,
-             (proto == PROTO_COSMO_2WAY) ? "2way" : "1way");
+             sstr_cstr(copy.name), (unsigned)copy.serial, sstr_cstr(copy.proto));
 
     broadcast_channel_update(&copy);
     mqtt_publish_channel_created(&copy);
+    cosmo_channel_t_clear(&copy);
     return ESP_OK;
 }
 
 esp_err_t channel_delete(uint32_t serial)
 {
-    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    config_lock();
     int idx = -1;
-    for (int i = 0; i < s_channel_count; i++) {
-        if (s_channels[i].serial == serial) { idx = i; break; }
+    for (int i = 0; i < g_config.channels_len; i++) {
+        if (g_config.channels[i].serial == serial) { idx = i; break; }
     }
     if (idx < 0) {
-        xSemaphoreGive(s_mutex);
+        config_unlock();
         return ESP_ERR_NOT_FOUND;
     }
-    cosmo_channel_t deleted = s_channels[idx]; /* save before removal */
-    for (int i = idx; i < s_channel_count - 1; i++)
-        s_channels[i] = s_channels[i + 1];
-    s_channel_count--;
-    channel_mark_dirty();
-    xSemaphoreGive(s_mutex);
+
+    struct cosmo_channel_t deleted;
+    channel_deep_copy(&deleted, &g_config.channels[idx]);
+
+    /* Clear the removed channel's sstr_t fields before overwriting */
+    cosmo_channel_t_clear(&g_config.channels[idx]);
+    /* Shift remaining channels */
+    for (int i = idx; i < g_config.channels_len - 1; i++)
+        g_config.channels[i] = g_config.channels[i + 1];
+    g_config.channels_len--;
+
+    config_unlock();
+    config_mark_dirty();
 
     feedback_timer_destroy(serial);
-    mqtt_publish_channel_deleted(&deleted);
 
     ESP_LOGI(TAG, "Deleted channel serial=0x%08X", (unsigned)serial);
-    cJSON *root = cJSON_CreateObject();
-    cJSON_AddStringToObject(root, "cmd", "channel_deleted");
-    cJSON *payload = cJSON_CreateObject();
-    cJSON_AddNumberToObject(payload, "serial", (double)(uint32_t)serial);
-    cJSON_AddItemToObject(root, "payload", payload);
-    char *json = cJSON_PrintUnformatted(root);
-    cJSON_Delete(root);
-    if (json) { webserver_ws_broadcast_json(json); free(json); }
+    broadcast_channel_deleted(serial);
+    mqtt_publish_channel_deleted(&deleted);
+    cosmo_channel_t_clear(&deleted);
     return ESP_OK;
 }
 
-esp_err_t channel_update(uint32_t serial, const cosmo_channel_settings_t *s)
+esp_err_t channel_update(uint32_t serial, const struct ws_update_channel_msg_t *msg)
 {
-    xSemaphoreTake(s_mutex, portMAX_DELAY);
-    cosmo_channel_t *ch = channel_find_locked(serial);
+    config_lock();
+    struct cosmo_channel_t *ch = channel_find_locked(serial);
     if (!ch) {
-        xSemaphoreGive(s_mutex);
+        config_unlock();
         return ESP_ERR_NOT_FOUND;
     }
-    cosmo_channel_t old_ch = *ch; /* capture state before update */
-    if (s->name[0])
-        snprintf(ch->name, sizeof(ch->name), "%s", s->name);
-    ch->proto                  = s->proto;
-    ch->force_tilt_support     = s->force_tilt_support;
-    ch->bidirectional_feedback = s->bidirectional_feedback;
-    ch->feedback_timeout_s     = s->feedback_timeout_s;
-    ch->device_class           = s->device_class;
-    if (s->mqtt_name[0])
-        snprintf(ch->mqtt_name, sizeof(ch->mqtt_name), "%s", s->mqtt_name);
-    else
-        derive_mqtt_name(ch->name, ch->mqtt_name, sizeof(ch->mqtt_name));
 
-    cosmo_channel_t copy = *ch;
-    channel_mark_dirty();
-    xSemaphoreGive(s_mutex);
+    /* Save old values for MQTT comparison */
+    int old_device_class = ch->device_class;
+    bool old_proto_is_2way = (sstr_compare_c(ch->proto, "2way") == 0);
+    char old_mqtt_name[64], old_name[32];
+    strlcpy(old_mqtt_name, sstr_cstr(ch->mqtt_name), sizeof(old_mqtt_name));
+    strlcpy(old_name, sstr_cstr(ch->name), sizeof(old_name));
 
-    ESP_LOGI(TAG, "Updated channel serial=0x%08X name=\"%s\" proto=%s force_tilt=%d bidir=%d timeout=%u",
-             (unsigned)copy.serial, copy.name,
-             (copy.proto == PROTO_COSMO_2WAY) ? "2way" : "1way",
-             (int)copy.force_tilt_support,
-             (int)copy.bidirectional_feedback,
-             (unsigned)copy.feedback_timeout_s);
+    if (msg->has_name && sstr_length(msg->name) > 0) {
+        sstr_clear(ch->name);
+        sstr_append(ch->name, msg->name);
+    }
+    if (msg->has_proto && sstr_length(msg->proto) > 0) {
+        sstr_clear(ch->proto);
+        sstr_append(ch->proto, msg->proto);
+    }
+    if (msg->has_force_tilt_support)
+        ch->force_tilt_support = msg->force_tilt_support;
+    if (msg->has_bidirectional_feedback)
+        ch->bidirectional_feedback = msg->bidirectional_feedback;
+    if (msg->has_feedback_timeout_s)
+        ch->feedback_timeout_s = (uint16_t)msg->feedback_timeout_s;
+    if (msg->has_device_class)
+        ch->device_class = msg->device_class;
+
+    if (msg->has_mqtt_name && sstr_length(msg->mqtt_name) > 0) {
+        sstr_clear(ch->mqtt_name);
+        sstr_append(ch->mqtt_name, msg->mqtt_name);
+    } else if (msg->has_name && sstr_length(msg->name) > 0) {
+        /* Derive new mqtt_name from the new channel name */
+        char derived[64];
+        derive_mqtt_name(sstr_cstr(ch->name), derived, sizeof(derived));
+        sstr_clear(ch->mqtt_name);
+        sstr_append_cstr(ch->mqtt_name, derived);
+    }
+
+    struct cosmo_channel_t copy;
+    channel_deep_copy(&copy, ch);
+    config_unlock();
+
+    config_mark_dirty();
+
+    ESP_LOGI(TAG, "Updated channel serial=0x%08X name=\"%s\"",
+             (unsigned)copy.serial, sstr_cstr(copy.name));
+
     broadcast_channel_update(&copy);
 
-    /* Republish HA discovery if any discovery-relevant field changed */
-    bool discovery_changed = (old_ch.device_class != copy.device_class)  ||
-                             (old_ch.proto         != copy.proto)         ||
-                             (strcmp(old_ch.mqtt_name, copy.mqtt_name) != 0) ||
-                             (strcmp(old_ch.name,      copy.name)      != 0);
-    if (discovery_changed)
+    bool discovery_changed = (old_device_class != copy.device_class)               ||
+                             ((sstr_compare_c(copy.proto, "2way") == 0) != old_proto_is_2way) ||
+                             (strcmp(old_mqtt_name, sstr_cstr(copy.mqtt_name)) != 0) ||
+                             (strcmp(old_name,      sstr_cstr(copy.name)) != 0);
+    if (discovery_changed) {
+        /* Build old_ch with old data for clearing HA discovery */
+        struct cosmo_channel_t old_ch;
+        cosmo_channel_t_init(&old_ch);
+        old_ch.device_class = old_device_class;
+        old_ch.mqtt_name    = sstr(old_mqtt_name);
+        old_ch.name         = sstr(old_name);
+        old_ch.proto        = sstr(old_proto_is_2way ? "2way" : "1way");
         mqtt_republish_channel_discovery(&old_ch, &copy);
-    else
+        cosmo_channel_t_clear(&old_ch);
+    } else {
         mqtt_publish_channel_update(&copy);
+    }
+
+    cosmo_channel_t_clear(&copy);
     return ESP_OK;
+}
+
+/* Map RX feedback packet command to channel state */
+static int rx_feedback_state(cosmo_cmd_t cmd, int current)
+{
+    switch (cmd) {
+    case COSMO_BTN_FEEDBACK_TOP:         return channel_state_t_open;
+    case COSMO_BTN_FEEDBACK_BOTTOM:      return channel_state_t_closed;
+    case COSMO_BTN_FEEDBACK_COMFORT:     return channel_state_t_comfort;
+    case COSMO_BTN_FEEDBACK_PARTIAL:     return channel_state_t_partially_open;
+    case COSMO_BTN_FEEDBACK_OBSTRUCTION: return channel_state_t_obstruction;
+    case COSMO_BTN_FEEDBACK_IN_MOTION:   return channel_state_t_in_motion;
+    default:                             return current;
+    }
 }
 
 void channel_update_from_packet(const cosmo_packet_t *pkt)
 {
-    xSemaphoreTake(s_mutex, portMAX_DELAY);
-    cosmo_channel_t *ch = channel_find_locked(pkt->serial);
+    config_lock();
+    struct cosmo_channel_t *ch = channel_find_locked(pkt->serial);
     if (!ch) {
-        xSemaphoreGive(s_mutex);
-        return; /* unknown serial — ignore */
+        config_unlock();
+        return;
     }
 
     if (!ch->bidirectional_feedback) {
-        xSemaphoreGive(s_mutex);
-        return; /* 1-way channel — ignore all radio feedback */
+        config_unlock();
+        return;
     }
 
-    /* Any real feedback cancels the motion-guard timer */
     uint32_t ch_serial = ch->serial;
 
     if (pkt->cmd == COSMO_BTN_FEEDBACK_IN_MOTION &&
-        (ch->state == CHANNEL_STATE_OPENING || ch->state == CHANNEL_STATE_CLOSING)) {
-        /*
-         * We already know the direction; IN_MOTION has less information.
-         * Keep the directional state but acknowledge the device responded.
-         */
-        ch->is_state_optimistic = false;
+        (ch->state == channel_state_t_opening || ch->state == channel_state_t_closing)) {
+        ch->is_state_optimistic = 0;
     } else {
         ch->state               = rx_feedback_state(pkt->cmd, ch->state);
-        ch->is_state_optimistic = false;
+        ch->is_state_optimistic = 0;
     }
 
     ch->rssi         = pkt->rssi;
     ch->last_seen_ts = (int64_t)time(NULL);
 
-    if (pkt->cmd == COSMO_BTN_FEEDBACK_PARTIAL)
-        ch->position = (int16_t)pkt->extra_payload;
-    else if (pkt->cmd == COSMO_BTN_FEEDBACK_TOP || pkt->cmd == COSMO_BTN_FEEDBACK_BOTTOM)
-        ch->position = -1;
+    if (pkt->cmd == COSMO_BTN_FEEDBACK_PARTIAL) {
+        ch->position     = (int16_t)pkt->extra_payload;
+        ch->has_position = 1;
+    } else if (pkt->cmd == COSMO_BTN_FEEDBACK_TOP ||
+               pkt->cmd == COSMO_BTN_FEEDBACK_BOTTOM) {
+        ch->has_position = 0;
+    }
 
-    cosmo_channel_t copy = *ch;
-    xSemaphoreGive(s_mutex);
+    struct cosmo_channel_t copy;
+    channel_deep_copy(&copy, ch);
+    config_unlock();
 
     feedback_timer_cancel(ch_serial);
     broadcast_channel_update(&copy);
     mqtt_publish_channel_update(&copy);
+    cosmo_channel_t_clear(&copy);
 }
 
 esp_err_t channel_send_cmd(uint32_t serial, cosmo_cmd_t cmd, uint8_t extra_payload)
 {
-    xSemaphoreTake(s_mutex, portMAX_DELAY);
-    cosmo_channel_t *ch = channel_find_locked(serial);
+    config_lock();
+    struct cosmo_channel_t *ch = channel_find_locked(serial);
     if (!ch) {
-        xSemaphoreGive(s_mutex);
+        config_unlock();
         return ESP_ERR_NOT_FOUND;
     }
 
@@ -410,111 +455,96 @@ esp_err_t channel_send_cmd(uint32_t serial, cosmo_cmd_t cmd, uint8_t extra_paylo
     if (ch->bidirectional_feedback) {
         switch (cmd) {
         case COSMO_BTN_UP:
-            ch->state = CHANNEL_STATE_OPENING;
-            ch->is_state_optimistic = true;
+            ch->state               = channel_state_t_opening;
+            ch->is_state_optimistic = 1;
             break;
         case COSMO_BTN_DOWN:
-            ch->state = CHANNEL_STATE_CLOSING;
-            ch->is_state_optimistic = true;
+            ch->state               = channel_state_t_closing;
+            ch->is_state_optimistic = 1;
             break;
         case COSMO_BTN_STOP:
-            if (ch->state == CHANNEL_STATE_OPENING ||
-                ch->state == CHANNEL_STATE_CLOSING  ||
-                ch->state == CHANNEL_STATE_IN_MOTION) {
-                ch->state = CHANNEL_STATE_PARTIALLY_OPEN;
+            if (ch->state == channel_state_t_opening  ||
+                ch->state == channel_state_t_closing  ||
+                ch->state == channel_state_t_in_motion) {
+                ch->state = channel_state_t_partially_open;
             }
-            ch->is_state_optimistic = true;
+            ch->is_state_optimistic = 1;
             break;
         default:
             break;
         }
     } else {
-        /* 1-way: jump straight to final state */
         switch (cmd) {
         case COSMO_BTN_UP:
-            ch->state = CHANNEL_STATE_OPEN;
-            ch->is_state_optimistic = true;
+            ch->state               = channel_state_t_open;
+            ch->is_state_optimistic = 1;
             break;
         case COSMO_BTN_DOWN:
-            ch->state = CHANNEL_STATE_CLOSED;
-            ch->is_state_optimistic = true;
+            ch->state               = channel_state_t_closed;
+            ch->is_state_optimistic = 1;
             break;
         default:
             break;
         }
     }
 
-    /* Capture serial and timeout for timer use outside the mutex */
     uint32_t ch_serial    = ch->serial;
-    uint16_t ch_timeout_s = ch->feedback_timeout_s;
-    bool     ch_bidir     = ch->bidirectional_feedback;
+    uint16_t ch_timeout_s = (uint16_t)ch->feedback_timeout_s;
+    bool     ch_bidir     = (bool)ch->bidirectional_feedback;
+    cosmo_proto_t proto   = channel_proto_to_cosmo(ch->proto);
 
-    cosmo_channel_t copy = *ch;
-    channel_mark_dirty();
-    xSemaphoreGive(s_mutex);
+    struct cosmo_channel_t copy;
+    channel_deep_copy(&copy, ch);
+    config_unlock();
 
-    /* Manage feedback guard timer (bidirectional channels only) */
+    config_mark_dirty();
+
     if (ch_bidir) {
-        if (cmd == COSMO_BTN_UP || cmd == COSMO_BTN_DOWN) {
+        if (cmd == COSMO_BTN_UP || cmd == COSMO_BTN_DOWN)
             feedback_timer_arm(ch_serial, ch_timeout_s);
-        } else if (cmd == COSMO_BTN_STOP) {
+        else if (cmd == COSMO_BTN_STOP)
             feedback_timer_cancel(ch_serial);
-        }
     }
 
     cosmo_packet_t pkt = {
-        .proto         = copy.proto,
+        .proto         = proto,
         .cmd           = cmd,
         .serial        = copy.serial,
-        .counter       = copy.counter,
+        .counter       = (uint16_t)copy.counter,
         .repeat        = 3,
         .extra_payload = extra_payload,
     };
     radio_request_tx(&pkt);
     broadcast_channel_update(&copy);
     mqtt_publish_channel_update(&copy);
+    cosmo_channel_t_clear(&copy);
     return ESP_OK;
 }
 
 void channel_send_all(int fd)
 {
-    xSemaphoreTake(s_mutex, portMAX_DELAY);
-    int count = s_channel_count;
-    cosmo_channel_t snapshot[CHANNEL_MAX_COUNT];
-    memcpy(snapshot, s_channels, (size_t)count * sizeof(cosmo_channel_t));
-    xSemaphoreGive(s_mutex);
+    config_lock();
+    sstr_t json = sstr_new();
+    sstr_append_cstr(json, "{\"cmd\":\"channels\",\"payload\":");
+    json_marshal_array_cosmo_channel_t(g_config.channels, g_config.channels_len, json);
+    sstr_append_cstr(json, "}");
+    config_unlock();
 
-    cJSON *root = cJSON_CreateObject();
-    cJSON_AddStringToObject(root, "cmd", "channels");
-    cJSON *arr = cJSON_CreateArray();
-    for (int i = 0; i < count; i++)
-        cJSON_AddItemToArray(arr, channel_to_cjson(&snapshot[i]));
-    cJSON_AddItemToObject(root, "payload", arr);
-    char *json = cJSON_PrintUnformatted(root);
-    cJSON_Delete(root);
-    if (json) { webserver_ws_send_json_to_fd(fd, json); free(json); }
+    webserver_ws_send_json_to_fd(fd, sstr_cstr(json));
+    sstr_free(json);
 }
 
-int channel_snapshot(cosmo_channel_t out[CHANNEL_MAX_COUNT])
-{
-    xSemaphoreTake(s_mutex, portMAX_DELAY);
-    int count = s_channel_count;
-    memcpy(out, s_channels, (size_t)count * sizeof(cosmo_channel_t));
-    xSemaphoreGive(s_mutex);
-    return count;
-}
-
-esp_err_t channel_find_by_mqtt_name(const char *mqtt_name, cosmo_channel_t *out)
+esp_err_t channel_find_by_mqtt_name(const char *mqtt_name, struct cosmo_channel_t *out)
 {
     if (!mqtt_name || !out) return ESP_ERR_INVALID_ARG;
-    xSemaphoreTake(s_mutex, portMAX_DELAY);
-    for (int i = 0; i < s_channel_count; i++) {
-        if (strcmp(s_channels[i].mqtt_name, mqtt_name) == 0) {
-            *out = s_channels[i];
-            xSemaphoreGive(s_mutex);
+    config_lock();
+    for (int i = 0; i < g_config.channels_len; i++) {
+        if (sstr_compare_c(g_config.channels[i].mqtt_name, mqtt_name) == 0) {
+            channel_deep_copy(out, &g_config.channels[i]);
+            config_unlock();
             return ESP_OK;
         }
     }
-    xSemaphoreGive(s_mutex);
+    config_unlock();
     return ESP_ERR_NOT_FOUND;
 }

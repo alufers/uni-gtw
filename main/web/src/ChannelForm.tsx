@@ -1,6 +1,6 @@
 import { useState } from "preact/hooks";
 import { Button } from "./Button";
-import { Channel, DEVICE_CLASS_OPTIONS, toMqttName } from "./channelTypes";
+import { Channel, DeviceClass, DEVICE_CLASS_OPTIONS, toMqttName } from "./channelTypes";
 
 interface ChannelFormProps {
   /** undefined → create mode; defined → edit mode */
@@ -8,7 +8,7 @@ interface ChannelFormProps {
   onSubmit: (data: {
     name: string;
     proto: "1way" | "2way";
-    device_class: number;
+    device_class: DeviceClass;
     mqtt_name: string;
     force_tilt_support?: boolean;
     bidirectional_feedback?: boolean;
@@ -24,7 +24,7 @@ export function ChannelForm({ channel, onSubmit, onCancel }: ChannelFormProps) {
   const [forceTilt, setForceTilt] = useState(channel?.force_tilt_support ?? false);
   const [bidirFeedback, setBidirFeedback] = useState(channel?.bidirectional_feedback ?? true);
   const [feedbackTimeout, setFeedbackTimeout] = useState(channel?.feedback_timeout_s ?? 120);
-  const [deviceClass, setDeviceClass] = useState(channel?.device_class ?? 9); /* 9 = SHUTTER */
+  const [deviceClass, setDeviceClass] = useState<DeviceClass>(channel?.device_class ?? "shutter");
   const [mqttName, setMqttName] = useState(channel?.mqtt_name ?? toMqttName(channel?.name ?? ""));
   const [mqttNameTouched, setMqttNameTouched] = useState(false);
 
@@ -91,7 +91,7 @@ export function ChannelForm({ channel, onSubmit, onCancel }: ChannelFormProps) {
       </label>
       <select
         value={deviceClass}
-        onChange={(e) => setDeviceClass(parseInt((e.target as HTMLSelectElement).value))}
+        onChange={(e) => setDeviceClass((e.target as HTMLSelectElement).value as DeviceClass)}
         class="w-full bg-zinc-800 text-zinc-100 border border-zinc-600 rounded px-2 py-1 text-xs mb-2"
       >
         {DEVICE_CLASS_OPTIONS.map((o) => (

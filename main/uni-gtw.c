@@ -71,19 +71,21 @@ void app_main(void)
     wifi_manager_init();
 
     /* Apply hostname to STA netif and mDNS */
-    gateway_config_t cfg;
-    config_get(&cfg);
+    char hostname[64];
+    config_lock();
+    snprintf(hostname, sizeof(hostname), "%s", sstr_cstr(g_config.hostname));
+    config_unlock();
 
     esp_netif_t *sta_netif = wifi_manager_get_sta_netif();
     if (sta_netif)
-        esp_netif_set_hostname(sta_netif, cfg.hostname);
+        esp_netif_set_hostname(sta_netif, hostname);
 
     ESP_ERROR_CHECK(mdns_init());
-    mdns_hostname_set(cfg.hostname);
+    mdns_hostname_set(hostname);
     mdns_instance_name_set("uni-gtw RF Gateway");
     mdns_service_add(NULL, "_http",    "_tcp", 80, NULL, 0);
     mdns_service_add(NULL, "_uni_gtw", "_tcp", 80, NULL, 0);
-    ESP_LOGI(TAG, "mDNS started: %s.local", cfg.hostname);
+    ESP_LOGI(TAG, "mDNS started: %s.local", hostname);
 
     /* Radio init — result sets the three-state global */
     esp_err_t radio_err = radio_init();

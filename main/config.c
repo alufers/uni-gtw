@@ -1,6 +1,5 @@
 #include "config.h"
 #include "background_worker.h"
-#include "channel.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -8,18 +7,14 @@
 
 #include "esp_log.h"
 #include "esp_mac.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/semphr.h"
-#include "cJSON.h"
 
 static const char *TAG        = "config";
 static const char *CONFIG_PATH = "/littlefs/config.json";
 
-static SemaphoreHandle_t s_mutex;
+/* ── Global state ────────────────────────────────────────────────────────── */
 
-static gateway_config_t s_config;
-static cosmo_channel_t  s_channels[CHANNEL_MAX_COUNT];
-static int              s_channel_count = 0;
+struct gateway_config_t g_config;
+SemaphoreHandle_t       g_config_mutex;
 
 /* ── Default hostname ────────────────────────────────────────────────────── */
 
@@ -27,81 +22,31 @@ static void set_default_hostname(void)
 {
     uint8_t mac[6];
     esp_read_mac(mac, ESP_MAC_WIFI_STA);
-    snprintf(s_config.hostname, sizeof(s_config.hostname),
-             "uni-gtw%02x%02x", mac[4], mac[5]);
+    char buf[32];
+    snprintf(buf, sizeof(buf), "uni-gtw%02x%02x", mac[4], mac[5]);
+    sstr_free(g_config.hostname);
+    g_config.hostname = sstr(buf);
 }
 
 /* ── File I/O ────────────────────────────────────────────────────────────── */
 
 void config_do_save(void)
 {
-    cosmo_channel_t *snap = malloc(CHANNEL_MAX_COUNT * sizeof(cosmo_channel_t));
-    gateway_config_t *cfg = malloc(sizeof(gateway_config_t));
-    if (!snap || !cfg) {
-        ESP_LOGE(TAG, "config_do_save: out of memory");
-        free(snap);
-        free(cfg);
-        return;
+    /* Marshal JSON under the mutex (fast, in-memory), then write outside. */
+    config_lock();
+    sstr_t json = sstr_new();
+    json_marshal_gateway_config_t(&g_config, json);
+    config_unlock();
+
+    FILE *f = fopen(CONFIG_PATH, "w");
+    if (f) {
+        fputs(sstr_cstr(json), f);
+        fclose(f);
+        ESP_LOGI(TAG, "Config saved");
+    } else {
+        ESP_LOGW(TAG, "Failed to open config for writing");
     }
-
-    xSemaphoreTake(s_mutex, portMAX_DELAY);
-    int count = s_channel_count;
-    memcpy(snap, s_channels, (size_t)count * sizeof(cosmo_channel_t));
-    *cfg = s_config;
-    xSemaphoreGive(s_mutex);
-
-    cJSON *root = cJSON_CreateObject();
-
-    cJSON_AddNumberToObject(root, "version",  1);
-    cJSON_AddStringToObject(root, "hostname", cfg->hostname);
-
-    cJSON *mqtt_j = cJSON_CreateObject();
-    cJSON_AddBoolToObject  (mqtt_j, "enabled",              cfg->mqtt.enabled);
-    cJSON_AddStringToObject(mqtt_j, "broker",               cfg->mqtt.broker);
-    cJSON_AddNumberToObject(mqtt_j, "port",                 cfg->mqtt.port);
-    cJSON_AddStringToObject(mqtt_j, "username",             cfg->mqtt.username);
-    cJSON_AddStringToObject(mqtt_j, "password",             cfg->mqtt.password);
-    cJSON_AddBoolToObject  (mqtt_j, "ha_discovery_enabled", cfg->mqtt.ha_discovery_enabled);
-    cJSON_AddStringToObject(mqtt_j, "ha_prefix",            cfg->mqtt.ha_prefix);
-    cJSON_AddStringToObject(mqtt_j, "mqtt_prefix",          cfg->mqtt.mqtt_prefix);
-    cJSON_AddItemToObject(root, "mqtt", mqtt_j);
-
-    cJSON *radio_j = cJSON_CreateObject();
-    cJSON_AddBoolToObject  (radio_j, "enabled",    cfg->radio.enabled);
-    cJSON_AddNumberToObject(radio_j, "gpio_miso",  cfg->radio.gpio_miso);
-    cJSON_AddNumberToObject(radio_j, "gpio_mosi",  cfg->radio.gpio_mosi);
-    cJSON_AddNumberToObject(radio_j, "gpio_sck",   cfg->radio.gpio_sck);
-    cJSON_AddNumberToObject(radio_j, "gpio_csn",   cfg->radio.gpio_csn);
-    cJSON_AddNumberToObject(radio_j, "gpio_gdo0",  cfg->radio.gpio_gdo0);
-    cJSON_AddNumberToObject(radio_j, "spi_freq_hz",cfg->radio.spi_freq_hz);
-    cJSON_AddItemToObject(root, "radio", radio_j);
-
-    cJSON_AddNumberToObject(root, "position_status_query_interval_s",
-                            cfg->position_status_query_interval_s);
-    cJSON_AddNumberToObject(root, "gpio_status_led", cfg->gpio_status_led);
-
-    cJSON *arr = cJSON_CreateArray();
-    for (int i = 0; i < count; i++)
-        cJSON_AddItemToArray(arr, channel_to_cjson(&snap[i]));
-    cJSON_AddItemToObject(root, "channels", arr);
-
-    free(snap);
-    free(cfg);
-
-    char *str = cJSON_PrintUnformatted(root);
-    cJSON_Delete(root);
-
-    if (str) {
-        FILE *f = fopen(CONFIG_PATH, "w");
-        if (f) {
-            fputs(str, f);
-            fclose(f);
-            ESP_LOGI(TAG, "Config saved (%d channels)", count);
-        } else {
-            ESP_LOGW(TAG, "Failed to open config for writing");
-        }
-        free(str);
-    }
+    sstr_free(json);
 }
 
 static void do_load(void)
@@ -123,259 +68,70 @@ static void do_load(void)
     fclose(f);
     buf[size] = '\0';
 
-    cJSON *root = cJSON_Parse(buf);
+    /* Unmarshal into g_config under the mutex.
+     * Use sstr_of() (LONG type), not sstr_ref() (REF type): json.gen.c's
+     * inlined SSTR_CSTR_ macro only handles SHORT/LONG, so a REF sstr
+     * returns garbage when used as unmarshal input. */
+    config_lock();
+    sstr_t in = sstr_of(buf, (size_t)size);
+    int rc = json_unmarshal_gateway_config_t(in, &g_config);
+    sstr_free(in);
+    config_unlock();
+
     free(buf);
-    if (!root) {
-        ESP_LOGW(TAG, "Config JSON parse error");
+
+    if (rc != 0) {
+        ESP_LOGW(TAG, "Config JSON parse error (rc=%d)", rc);
         return;
     }
 
-    cJSON *ver_j = cJSON_GetObjectItem(root, "version");
-    int version = cJSON_IsNumber(ver_j) ? (int)cJSON_GetNumberValue(ver_j) : 0;
-    ESP_LOGI(TAG, "Config version: %d", version);
+    config_lock();
+    /* Runtime-only fields are not persisted: reset is_state_optimistic. */
+    for (int i = 0; i < g_config.channels_len; i++)
+        g_config.channels[i].is_state_optimistic = 0;
 
-    const char *hn = cJSON_GetStringValue(cJSON_GetObjectItem(root, "hostname"));
-    if (hn && hn[0])
-        snprintf(s_config.hostname, sizeof(s_config.hostname), "%s", hn);
-
-    cJSON *mqtt_j = cJSON_GetObjectItem(root, "mqtt");
-    if (cJSON_IsObject(mqtt_j)) {
-        cJSON *en = cJSON_GetObjectItem(mqtt_j, "enabled");
-        if (cJSON_IsBool(en))
-            s_config.mqtt.enabled = cJSON_IsTrue(en);
-        const char *broker = cJSON_GetStringValue(cJSON_GetObjectItem(mqtt_j, "broker"));
-        if (broker)
-            snprintf(s_config.mqtt.broker, sizeof(s_config.mqtt.broker), "%s", broker);
-        cJSON *port_j = cJSON_GetObjectItem(mqtt_j, "port");
-        if (cJSON_IsNumber(port_j))
-            s_config.mqtt.port = (uint16_t)cJSON_GetNumberValue(port_j);
-        const char *user = cJSON_GetStringValue(cJSON_GetObjectItem(mqtt_j, "username"));
-        if (user)
-            snprintf(s_config.mqtt.username, sizeof(s_config.mqtt.username), "%s", user);
-        const char *pass = cJSON_GetStringValue(cJSON_GetObjectItem(mqtt_j, "password"));
-        if (pass)
-            snprintf(s_config.mqtt.password, sizeof(s_config.mqtt.password), "%s", pass);
-        cJSON *had_j = cJSON_GetObjectItem(mqtt_j, "ha_discovery_enabled");
-        if (cJSON_IsBool(had_j))
-            s_config.mqtt.ha_discovery_enabled = cJSON_IsTrue(had_j);
-        const char *ha_pfx = cJSON_GetStringValue(cJSON_GetObjectItem(mqtt_j, "ha_prefix"));
-        if (ha_pfx && ha_pfx[0])
-            snprintf(s_config.mqtt.ha_prefix, sizeof(s_config.mqtt.ha_prefix), "%s", ha_pfx);
-        const char *mq_pfx = cJSON_GetStringValue(cJSON_GetObjectItem(mqtt_j, "mqtt_prefix"));
-        if (mq_pfx && mq_pfx[0])
-            snprintf(s_config.mqtt.mqtt_prefix, sizeof(s_config.mqtt.mqtt_prefix), "%s", mq_pfx);
-    }
-
-    cJSON *radio_j = cJSON_GetObjectItem(root, "radio");
-    if (cJSON_IsObject(radio_j)) {
-        cJSON *en = cJSON_GetObjectItem(radio_j, "enabled");
-        if (cJSON_IsBool(en))
-            s_config.radio.enabled = cJSON_IsTrue(en);
-#define LOAD_INT(field, key) { cJSON *j = cJSON_GetObjectItem(radio_j, key); if (cJSON_IsNumber(j)) s_config.radio.field = (int)cJSON_GetNumberValue(j); }
-        LOAD_INT(gpio_miso,   "gpio_miso")
-        LOAD_INT(gpio_mosi,   "gpio_mosi")
-        LOAD_INT(gpio_sck,    "gpio_sck")
-        LOAD_INT(gpio_csn,    "gpio_csn")
-        LOAD_INT(gpio_gdo0,   "gpio_gdo0")
-        LOAD_INT(spi_freq_hz, "spi_freq_hz")
-#undef LOAD_INT
-    }
-
-    cJSON *psqi_j = cJSON_GetObjectItem(root, "position_status_query_interval_s");
-    if (cJSON_IsNumber(psqi_j))
-        s_config.position_status_query_interval_s = (uint16_t)cJSON_GetNumberValue(psqi_j);
-
-    cJSON *led_j = cJSON_GetObjectItem(root, "gpio_status_led");
-    if (cJSON_IsNumber(led_j))
-        s_config.gpio_status_led = (int)cJSON_GetNumberValue(led_j);
-
-    cJSON *arr = cJSON_GetObjectItem(root, "channels");
-    int count = 0;
-    if (cJSON_IsArray(arr)) {
-        cJSON *item;
-        cJSON_ArrayForEach(item, arr) {
-            if (count >= CHANNEL_MAX_COUNT) break;
-            const char *name      = cJSON_GetStringValue(cJSON_GetObjectItem(item, "name"));
-            const char *proto_str = cJSON_GetStringValue(cJSON_GetObjectItem(item, "proto"));
-            cJSON *serial_j  = cJSON_GetObjectItem(item, "serial");
-            cJSON *counter_j = cJSON_GetObjectItem(item, "counter");
-            if (!name || !proto_str || !cJSON_IsNumber(serial_j) || !cJSON_IsNumber(counter_j))
-                continue;
-            cosmo_channel_t *ch = &s_channels[count++];
-            memset(ch, 0, sizeof(*ch));
-            snprintf(ch->name, sizeof(ch->name), "%s", name);
-            ch->proto             = (strcmp(proto_str, "2way") == 0) ? PROTO_COSMO_2WAY : PROTO_COSMO_1WAY;
-            ch->serial            = (uint32_t)cJSON_GetNumberValue(serial_j);
-            ch->serial           &= ~0x1F;
-            ch->counter           = (uint16_t)cJSON_GetNumberValue(counter_j);
-            ch->state             = CHANNEL_STATE_UNKNOWN;
-            ch->position          = -1;
-            cJSON *fts_j          = cJSON_GetObjectItem(item, "force_tilt_support");
-            ch->force_tilt_support = cJSON_IsTrue(fts_j);
-
-            cJSON *bf_j = cJSON_GetObjectItem(item, "bidirectional_feedback");
-            ch->bidirectional_feedback = cJSON_IsBool(bf_j) ? cJSON_IsTrue(bf_j) : true;
-
-            cJSON *ft_j = cJSON_GetObjectItem(item, "feedback_timeout_s");
-            ch->feedback_timeout_s = cJSON_IsNumber(ft_j)
-                ? (uint16_t)cJSON_GetNumberValue(ft_j) : 120;
-
-            cJSON *dc_j = cJSON_GetObjectItem(item, "device_class");
-            ch->device_class = cJSON_IsNumber(dc_j)
-                ? (cosmo_channel_device_class_t)(int)cJSON_GetNumberValue(dc_j)
-                : CHANNEL_DEVICE_CLASS_SHUTTER;
-
-            const char *mname = cJSON_GetStringValue(cJSON_GetObjectItem(item, "mqtt_name"));
-            if (mname && mname[0]) {
-                snprintf(ch->mqtt_name, sizeof(ch->mqtt_name), "%s", mname);
-            } else {
-                /* Derive default: lowercase name, non-alpha → '_' */
-                size_t ni = 0;
-                for (; ch->name[ni] && ni + 1 < sizeof(ch->mqtt_name); ni++) {
-                    char c = ch->name[ni];
-                    if (c >= 'A' && c <= 'Z') c = (char)(c + 32);
-                    ch->mqtt_name[ni] = ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) ? c : '_';
-                }
-                ch->mqtt_name[ni] = '\0';
-            }
-
-            /* is_state_optimistic is runtime-only — always false after a load */
-            ch->is_state_optimistic = false;
-        }
-    }
-    s_channel_count = count;
-
-    cJSON_Delete(root);
-    ESP_LOGI(TAG, "Loaded config: hostname=%s, %d channels", s_config.hostname, count);
-}
-
-/* ── Internal helpers ────────────────────────────────────────────────────── */
-
-static void mark_dirty(void)
-{
-    background_worker_notify_save();
+    ESP_LOGI(TAG, "Loaded config: hostname=%s, %d channels",
+             sstr_cstr(g_config.hostname), g_config.channels_len);
+    config_unlock();
 }
 
 /* ── Public API ──────────────────────────────────────────────────────────── */
 
 void config_init(void)
 {
-    s_mutex = xSemaphoreCreateMutex();
-    memset(&s_config, 0, sizeof(s_config));
-    s_config.mqtt.port                       = 1883;
-    s_config.mqtt.ha_discovery_enabled       = true;
-    s_config.position_status_query_interval_s = 60;
-    snprintf(s_config.mqtt.ha_prefix,   sizeof(s_config.mqtt.ha_prefix),   "homeassistant");
-    snprintf(s_config.mqtt.mqtt_prefix, sizeof(s_config.mqtt.mqtt_prefix), "unigtw");
-    s_config.gpio_status_led = -1;
-    s_config.radio.enabled   = false;
-    s_config.radio.gpio_miso = CONFIG_RADIO_DEFAULT_MISO;
-    s_config.radio.gpio_mosi = CONFIG_RADIO_DEFAULT_MOSI;
-    s_config.radio.gpio_sck  = CONFIG_RADIO_DEFAULT_SCK;
-    s_config.radio.gpio_csn  = CONFIG_RADIO_DEFAULT_CSN;
-    s_config.radio.gpio_gdo0 = CONFIG_RADIO_DEFAULT_GDO0;
-    s_config.radio.spi_freq_hz = CONFIG_RADIO_DEFAULT_SPI_FREQ;
+    g_config_mutex = xSemaphoreCreateMutex();
+
+    gateway_config_t_init(&g_config);
+
+    /* Set defaults */
+    g_config.mqtt.port                       = 1883;
+    g_config.mqtt.ha_discovery_enabled       = 1;
+    g_config.position_status_query_interval_s = 60;
+    g_config.gpio_status_led                 = -1;
+
+    /* String defaults — sstr() allocates a new sstr_t from a C string literal. */
+    g_config.mqtt.ha_prefix   = sstr("homeassistant");
+    g_config.mqtt.mqtt_prefix = sstr("unigtw");
+
+    /* Radio GPIO defaults */
+    g_config.radio.enabled    = 0;
+    g_config.radio.gpio_miso  = CONFIG_RADIO_DEFAULT_MISO;
+    g_config.radio.gpio_mosi  = CONFIG_RADIO_DEFAULT_MOSI;
+    g_config.radio.gpio_sck   = CONFIG_RADIO_DEFAULT_SCK;
+    g_config.radio.gpio_csn   = CONFIG_RADIO_DEFAULT_CSN;
+    g_config.radio.gpio_gdo0  = CONFIG_RADIO_DEFAULT_GDO0;
+    g_config.radio.spi_freq_hz = CONFIG_RADIO_DEFAULT_SPI_FREQ;
 
     set_default_hostname();
     do_load();
-    /* Save task/timer are owned by background_worker; started after config_init */
+}
+
+void config_mark_dirty(void)
+{
+    background_worker_notify_save();
 }
 
 void config_save_now(void)
 {
     background_worker_save_now();
-}
-
-void config_load_channels(cosmo_channel_t *out, int *out_count)
-{
-    xSemaphoreTake(s_mutex, portMAX_DELAY);
-    int count = s_channel_count;
-    memcpy(out, s_channels, (size_t)count * sizeof(cosmo_channel_t));
-    xSemaphoreGive(s_mutex);
-    *out_count = count;
-}
-
-void config_save_channels(const cosmo_channel_t *arr, int count)
-{
-    xSemaphoreTake(s_mutex, portMAX_DELAY);
-    s_channel_count = count;
-    if (count > 0)
-        memcpy(s_channels, arr, (size_t)count * sizeof(cosmo_channel_t));
-    xSemaphoreGive(s_mutex);
-    mark_dirty();
-}
-
-void config_get(gateway_config_t *out)
-{
-    xSemaphoreTake(s_mutex, portMAX_DELAY);
-    *out = s_config;
-    xSemaphoreGive(s_mutex);
-}
-
-esp_err_t config_set_hostname(const char *hostname)
-{
-    if (!hostname || !hostname[0]) return ESP_ERR_INVALID_ARG;
-    xSemaphoreTake(s_mutex, portMAX_DELAY);
-    snprintf(s_config.hostname, sizeof(s_config.hostname), "%s", hostname);
-    xSemaphoreGive(s_mutex);
-    mark_dirty();
-    return ESP_OK;
-}
-
-esp_err_t config_set_mqtt(const char *broker, uint16_t port,
-                          const char *username, const char *password,
-                          bool enabled,
-                          bool ha_discovery_enabled,
-                          const char *ha_prefix,
-                          const char *mqtt_prefix)
-{
-    xSemaphoreTake(s_mutex, portMAX_DELAY);
-    s_config.mqtt.enabled              = enabled;
-    s_config.mqtt.port                 = port ? port : 1883;
-    s_config.mqtt.ha_discovery_enabled = ha_discovery_enabled;
-    snprintf(s_config.mqtt.broker,   sizeof(s_config.mqtt.broker),   "%s", broker      ? broker      : "");
-    snprintf(s_config.mqtt.username, sizeof(s_config.mqtt.username), "%s", username    ? username    : "");
-    snprintf(s_config.mqtt.password, sizeof(s_config.mqtt.password), "%s", password    ? password    : "");
-    snprintf(s_config.mqtt.ha_prefix,   sizeof(s_config.mqtt.ha_prefix),
-             "%s", (ha_prefix   && ha_prefix[0])   ? ha_prefix   : "homeassistant");
-    snprintf(s_config.mqtt.mqtt_prefix, sizeof(s_config.mqtt.mqtt_prefix),
-             "%s", (mqtt_prefix && mqtt_prefix[0]) ? mqtt_prefix : "unigtw");
-    xSemaphoreGive(s_mutex);
-    mark_dirty();
-    return ESP_OK;
-}
-
-esp_err_t config_set_radio(bool enabled,
-                           int gpio_miso, int gpio_mosi, int gpio_sck,
-                           int gpio_csn, int gpio_gdo0, int spi_freq_hz)
-{
-    xSemaphoreTake(s_mutex, portMAX_DELAY);
-    s_config.radio.enabled    = enabled;
-    s_config.radio.gpio_miso  = gpio_miso;
-    s_config.radio.gpio_mosi  = gpio_mosi;
-    s_config.radio.gpio_sck   = gpio_sck;
-    s_config.radio.gpio_csn   = gpio_csn;
-    s_config.radio.gpio_gdo0  = gpio_gdo0;
-    s_config.radio.spi_freq_hz = spi_freq_hz ? spi_freq_hz : CONFIG_RADIO_DEFAULT_SPI_FREQ;
-    xSemaphoreGive(s_mutex);
-    mark_dirty();
-    return ESP_OK;
-}
-
-esp_err_t config_set_position_query_interval(uint16_t interval_s)
-{
-    xSemaphoreTake(s_mutex, portMAX_DELAY);
-    s_config.position_status_query_interval_s = interval_s;
-    xSemaphoreGive(s_mutex);
-    mark_dirty();
-    return ESP_OK;
-}
-
-esp_err_t config_set_status_led(int gpio)
-{
-    xSemaphoreTake(s_mutex, portMAX_DELAY);
-    s_config.gpio_status_led = gpio;
-    xSemaphoreGive(s_mutex);
-    mark_dirty();
-    return ESP_OK;
 }

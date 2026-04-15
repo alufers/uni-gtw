@@ -12,7 +12,6 @@
 #include <stdlib.h>
 #include <time.h>
 
-#include "cJSON.h"
 #include "cosmo/cosmo.h"
 #include "esp_system.h"
 #include "esp_http_server.h"
@@ -27,7 +26,7 @@
 static const char *TAG = "webserver";
 
 extern radio_state_t g_radio_state;
-extern mqtt_status_t g_mqtt_status;
+extern int           g_mqtt_status; /* enum mqtt_status_t */
 
 /* ── Config ──────────────────────────────────────────────────────────────── */
 
@@ -41,7 +40,6 @@ static httpd_handle_t    s_server   = NULL;
 static int               s_ws_fds[MAX_WS_CLIENTS];
 static SemaphoreHandle_t s_ws_mutex;
 
-/* Rolling console history – protected by s_ws_mutex */
 static char  s_history[HISTORY_BUF_SIZE];
 static int   s_history_write = 0;
 static bool  s_history_full  = false;
@@ -162,17 +160,17 @@ static void ws_send_history(int fd)
     char  *hist = history_snapshot(&hist_len);
     if (!hist) return;
 
-    cJSON *root = cJSON_CreateObject();
-    cJSON_AddStringToObject(root, "cmd", "console");
-    cJSON_AddStringToObject(root, "payload", hist);
+    struct ws_server_message_t msg;
+    ws_server_message_t_init(&msg);
+    msg.tag = ws_server_message_t_console;
+    msg.value.console.payload = sstr(hist);
     free(hist);
 
-    char *json = cJSON_PrintUnformatted(root);
-    cJSON_Delete(root);
-    if (json) {
-        ws_queue_send(fd, json);
-        free(json);
-    }
+    sstr_t out = sstr_new();
+    json_marshal_ws_server_message_t(&msg, out);
+    ws_server_message_t_clear(&msg);
+    ws_queue_send(fd, sstr_cstr(out));
+    sstr_free(out);
 }
 
 /* ── WS broadcast / send helpers (public) ───────────────────────────────── */
@@ -207,44 +205,46 @@ static void build_and_send_status(int fd /* -1 = broadcast */)
     int64_t uptime_us = esp_timer_get_time();
     int64_t uptime_s  = uptime_us / 1000000LL;
 
-    char   sta_ssid[33] = {0};
-    bool   has_ssid = wifi_manager_get_sta_ssid(sta_ssid, sizeof(sta_ssid));
+    char sta_ssid[33] = {0};
+    bool has_ssid = wifi_manager_get_sta_ssid(sta_ssid, sizeof(sta_ssid));
 
-    cJSON *root    = cJSON_CreateObject();
-    cJSON *payload = cJSON_CreateObject();
-    cJSON_AddStringToObject(root, "cmd", "status");
-    cJSON_AddNumberToObject(payload, "uptime",    (double)uptime_s);
-    cJSON_AddNumberToObject(payload, "time",      (double)now);
-    const char *radio_status_str =
-        (g_radio_state == RADIO_STATE_OK)             ? "ok" :
-        (g_radio_state == RADIO_STATE_ERROR)          ? "error" : "not_configured";
-    const char *mqtt_status_str =
-        (g_mqtt_status == MQTT_STATUS_CONNECTED)    ? "connected"    :
-        (g_mqtt_status == MQTT_STATUS_CONNECTING)   ? "connecting"   :
-        (g_mqtt_status == MQTT_STATUS_DISCONNECTED) ? "disconnected" : "unconfigured";
+    /* Map radio_state_t to radio_status_t */
+    int radio_status;
+    switch (g_radio_state) {
+    case RADIO_STATE_OK:             radio_status = radio_status_t_ok; break;
+    case RADIO_STATE_ERROR:          radio_status = radio_status_t_error; break;
+    default:                         radio_status = radio_status_t_not_configured; break;
+    }
 
-    cJSON_AddStringToObject(payload, "wifi_mode",     (mode == WIFI_MGR_MODE_AP) ? "ap" : "sta");
-    cJSON_AddStringToObject(payload, "radio_status",  radio_status_str);
-    cJSON_AddStringToObject(payload, "mqtt_status",   mqtt_status_str);
-    if (has_rssi)
-        cJSON_AddNumberToObject(payload, "wifi_rssi", rssi);
-    else
-        cJSON_AddNullToObject(payload, "wifi_rssi");
-    if (has_ssid)
-        cJSON_AddStringToObject(payload, "wifi_ssid", sta_ssid);
-    else
-        cJSON_AddNullToObject(payload, "wifi_ssid");
-    cJSON_AddItemToObject(root, "payload", payload);
+    struct ws_server_message_t msg;
+    ws_server_message_t_init(&msg);
+    msg.tag = ws_server_message_t_status;
 
-    char *json = cJSON_PrintUnformatted(root);
-    cJSON_Delete(root);
-    if (!json) return;
+    struct ws_status_payload_t *p = &msg.value.status.payload;
+    p->uptime       = uptime_s;
+    p->time         = (int64_t)now;
+    p->wifi_mode    = (mode == WIFI_MGR_MODE_AP) ? wifi_mode_t_ap : wifi_mode_t_sta;
+    p->radio_status = radio_status;
+    p->mqtt_status  = g_mqtt_status;
+
+    if (has_rssi) {
+        p->has_wifi_rssi = 1;
+        p->wifi_rssi     = rssi;
+    }
+    if (has_ssid) {
+        p->has_wifi_ssid = 1;
+        p->wifi_ssid     = sstr(sta_ssid);
+    }
+
+    sstr_t out = sstr_new();
+    json_marshal_ws_server_message_t(&msg, out);
+    ws_server_message_t_clear(&msg);
 
     if (fd == -1)
-        webserver_ws_broadcast_json(json);
+        webserver_ws_broadcast_json(sstr_cstr(out));
     else
-        webserver_ws_send_json_to_fd(fd, json);
-    free(json);
+        webserver_ws_send_json_to_fd(fd, sstr_cstr(out));
+    sstr_free(out);
 }
 
 static void status_timer_cb(void *arg)
@@ -280,166 +280,130 @@ static void scan_task(void *arg)
     uint16_t count = WIFI_SCAN_MAX_APS;
     esp_err_t err  = wifi_manager_scan(results, &count);
 
-    cJSON *root = cJSON_CreateObject();
-    cJSON_AddStringToObject(root, "cmd", "wifi_scan_result");
-    cJSON *arr = cJSON_CreateArray();
-    if (err == ESP_OK) {
-        for (uint16_t i = 0; i < count; i++) {
-            cJSON *entry = cJSON_CreateObject();
-            cJSON_AddStringToObject(entry, "ssid", results[i].ssid);
-            cJSON_AddNumberToObject(entry, "rssi", results[i].rssi);
-            cJSON_AddNumberToObject(entry, "auth", results[i].authmode);
-            cJSON_AddItemToArray(arr, entry);
+    struct ws_server_message_t msg;
+    ws_server_message_t_init(&msg);
+    msg.tag = ws_server_message_t_wifi_scan_result;
+
+    if (err == ESP_OK && count > 0) {
+        msg.value.wifi_scan_result.payload =
+            malloc((size_t)count * sizeof(struct wifi_ap_info_t));
+        if (msg.value.wifi_scan_result.payload) {
+            for (uint16_t i = 0; i < count; i++) {
+                wifi_ap_info_t_init(&msg.value.wifi_scan_result.payload[i]);
+                msg.value.wifi_scan_result.payload[i].ssid = sstr(results[i].ssid);
+                msg.value.wifi_scan_result.payload[i].rssi = results[i].rssi;
+                msg.value.wifi_scan_result.payload[i].auth = results[i].authmode;
+            }
+            msg.value.wifi_scan_result.payload_len = (int)count;
         }
     }
-    cJSON_AddItemToObject(root, "payload", arr);
 
-    char *json = cJSON_PrintUnformatted(root);
-    cJSON_Delete(root);
-    if (json) {
-        webserver_ws_send_json_to_fd(fd, json);
-        free(json);
-    }
+    sstr_t out = sstr_new();
+    json_marshal_ws_server_message_t(&msg, out);
+    ws_server_message_t_clear(&msg);
 
+    webserver_ws_send_json_to_fd(fd, sstr_cstr(out));
+    sstr_free(out);
     vTaskDelete(NULL);
+}
+
+/* ── channel_cmd_name_t → cosmo_cmd_t ───────────────────────────────────── */
+
+static bool cmd_name_to_cosmo(int cmd_name, cosmo_cmd_t *out)
+{
+    switch (cmd_name) {
+    case channel_cmd_name_t_UP:               *out = COSMO_BTN_UP; break;
+    case channel_cmd_name_t_DOWN:             *out = COSMO_BTN_DOWN; break;
+    case channel_cmd_name_t_STOP:             *out = COSMO_BTN_STOP; break;
+    case channel_cmd_name_t_UP_DOWN:          *out = COSMO_BTN_UP_DOWN; break;
+    case channel_cmd_name_t_STOP_DOWN:        *out = COSMO_BTN_STOP_DOWN; break;
+    case channel_cmd_name_t_STOP_HOLD:        *out = COSMO_BTN_STOP_HOLD; break;
+    case channel_cmd_name_t_PROG:             *out = COSMO_BTN_PROG; break;
+    case channel_cmd_name_t_STOP_UP:          *out = COSMO_BTN_STOP_UP; break;
+    case channel_cmd_name_t_REQUEST_FEEDBACK: *out = COSMO_BTN_REQUEST_FEEDBACK; break;
+    case channel_cmd_name_t_REQUEST_POSITION: *out = COSMO_BTN_REQUEST_POSITION; break;
+    case channel_cmd_name_t_SET_POSITION:     *out = COSMO_BTN_SET_POSITION; break;
+    case channel_cmd_name_t_SET_TILT:         *out = COSMO_BTN_SET_TILT; break;
+    case channel_cmd_name_t_TILT_INCREASE:    *out = COSMO_BTN_TILT_INCREASE; break;
+    case channel_cmd_name_t_TILT_DECREASE:    *out = COSMO_BTN_TILT_DECREASE; break;
+    default: return false;
+    }
+    return true;
 }
 
 /* ── Incoming WS message dispatch ───────────────────────────────────────── */
 
 static void ws_dispatch(int fd, const char *text)
 {
-    cJSON *root = cJSON_Parse(text);
-    if (!root) return;
+    struct ws_client_message_t msg;
+    ws_client_message_t_init(&msg);
 
-    const char *cmd = cJSON_GetStringValue(cJSON_GetObjectItem(root, "cmd"));
-    if (!cmd) { cJSON_Delete(root); return; }
+    sstr_t in = sstr_of(text, strlen(text));
+    int rc = json_unmarshal_ws_client_message_t(in, &msg);
+    sstr_free(in);
 
-    if (strcmp(cmd, "create_channel") == 0) {
-        const char *name      = cJSON_GetStringValue(cJSON_GetObjectItem(root, "name"));
-        const char *proto_str = cJSON_GetStringValue(cJSON_GetObjectItem(root, "proto"));
-        cosmo_proto_t proto = (proto_str && strcmp(proto_str, "2way") == 0)
-                              ? PROTO_COSMO_2WAY : PROTO_COSMO_1WAY;
-        channel_create(name ? name : "Unnamed", proto);
+    if (rc != 0) {
+        ESP_LOGW(TAG, "WS parse error: rc=%d", rc);
+        ws_client_message_t_clear(&msg);
+        return;
+    }
 
-        /* Apply device_class and mqtt_name if provided */
-        cJSON *dc_j    = cJSON_GetObjectItem(root, "device_class");
-        cJSON *mname_j = cJSON_GetObjectItem(root, "mqtt_name");
-        if (cJSON_IsNumber(dc_j) || (mname_j && cJSON_IsString(mname_j))) {
-            /* Find the channel we just created by name (it's the last one added) */
-            cosmo_channel_t snap[CHANNEL_MAX_COUNT];
-            int count = channel_snapshot(snap);
-            if (count > 0) {
-                cosmo_channel_t *last = &snap[count - 1];
-                cosmo_channel_settings_t s = {
-                    .proto                  = last->proto,
-                    .force_tilt_support     = last->force_tilt_support,
-                    .bidirectional_feedback = last->bidirectional_feedback,
-                    .feedback_timeout_s     = last->feedback_timeout_s,
-                    .device_class           = cJSON_IsNumber(dc_j)
-                                              ? (cosmo_channel_device_class_t)(int)cJSON_GetNumberValue(dc_j)
-                                              : last->device_class,
-                };
-                snprintf(s.name, sizeof(s.name), "%s", last->name);
-                const char *mname_str = cJSON_GetStringValue(mname_j);
-                if (mname_str && mname_str[0])
-                    snprintf(s.mqtt_name, sizeof(s.mqtt_name), "%s", mname_str);
-                channel_update(last->serial, &s);
-            }
-        }
+    switch (msg.tag) {
+    case ws_client_message_t_create_channel: {
+        const struct ws_create_channel_msg_t *m = &msg.value.create_channel;
+        channel_create(
+            sstr_cstr(m->name),
+            sstr_length(m->proto) > 0 ? sstr_cstr(m->proto) : "1way",
+            m->device_class, m->has_device_class,
+            m->has_mqtt_name ? sstr_cstr(m->mqtt_name) : NULL,
+            m->has_mqtt_name
+        );
+        break;
+    }
 
-    } else if (strcmp(cmd, "delete_channel") == 0) {
-        cJSON *serial_j = cJSON_GetObjectItem(root, "serial");
-        if (!cJSON_IsNumber(serial_j)) { cJSON_Delete(root); return; }
-        channel_delete((uint32_t)cJSON_GetNumberValue(serial_j));
+    case ws_client_message_t_delete_channel:
+        channel_delete(msg.value.delete_channel.serial);
+        break;
 
-    } else if (strcmp(cmd, "channel_cmd") == 0) {
-        cJSON *serial_j = cJSON_GetObjectItem(root, "serial");
-        if (!cJSON_IsNumber(serial_j)) { cJSON_Delete(root); return; }
-        uint32_t serial = (uint32_t)cJSON_GetNumberValue(serial_j);
-
-        const char *cmd_name = cJSON_GetStringValue(cJSON_GetObjectItem(root, "cmd_name"));
-        if (!cmd_name) { cJSON_Delete(root); return; }
-
-        uint8_t extra_payload = 0;
-        cJSON *extra_j = cJSON_GetObjectItem(root, "extra_payload");
-        if (cJSON_IsNumber(extra_j))
-            extra_payload = (uint8_t)(int)cJSON_GetNumberValue(extra_j);
-
+    case ws_client_message_t_channel_cmd: {
+        const struct ws_channel_cmd_msg_t *m = &msg.value.channel_cmd;
         cosmo_cmd_t cosmo_cmd;
-        if      (strcmp(cmd_name, "UP")               == 0) cosmo_cmd = COSMO_BTN_UP;
-        else if (strcmp(cmd_name, "DOWN")             == 0) cosmo_cmd = COSMO_BTN_DOWN;
-        else if (strcmp(cmd_name, "STOP")             == 0) cosmo_cmd = COSMO_BTN_STOP;
-        else if (strcmp(cmd_name, "UP_DOWN")          == 0) cosmo_cmd = COSMO_BTN_UP_DOWN;
-        else if (strcmp(cmd_name, "STOP_DOWN")        == 0) cosmo_cmd = COSMO_BTN_STOP_DOWN;
-        else if (strcmp(cmd_name, "STOP_HOLD")        == 0) cosmo_cmd = COSMO_BTN_STOP_HOLD;
-        else if (strcmp(cmd_name, "PROG")             == 0) cosmo_cmd = COSMO_BTN_PROG;
-        else if (strcmp(cmd_name, "STOP_UP")          == 0) cosmo_cmd = COSMO_BTN_STOP_UP;
-        else if (strcmp(cmd_name, "REQUEST_FEEDBACK") == 0) cosmo_cmd = COSMO_BTN_REQUEST_FEEDBACK;
-        else if (strcmp(cmd_name, "REQUEST_POSITION") == 0) cosmo_cmd = COSMO_BTN_REQUEST_POSITION;
-        else if (strcmp(cmd_name, "SET_POSITION")     == 0) cosmo_cmd = COSMO_BTN_SET_POSITION;
-        else if (strcmp(cmd_name, "SET_TILT")         == 0) cosmo_cmd = COSMO_BTN_SET_TILT;
-        else if (strcmp(cmd_name, "TILT_INCREASE")    == 0) cosmo_cmd = COSMO_BTN_TILT_INCREASE;
-        else if (strcmp(cmd_name, "TILT_DECREASE")    == 0) cosmo_cmd = COSMO_BTN_TILT_DECREASE;
-        else { cJSON_Delete(root); return; }
-
-        channel_send_cmd(serial, cosmo_cmd, extra_payload);
+        if (!cmd_name_to_cosmo(m->cmd_name, &cosmo_cmd)) break;
+        uint8_t extra = m->has_extra_payload ? (uint8_t)m->extra_payload : 0;
+        channel_send_cmd(m->serial, cosmo_cmd, extra);
         background_worker_inhibit_position_query();
+        break;
+    }
 
-    } else if (strcmp(cmd, "update_channel") == 0) {
-        cJSON *serial_j = cJSON_GetObjectItem(root, "serial");
-        if (!cJSON_IsNumber(serial_j)) { cJSON_Delete(root); return; }
-        uint32_t serial = (uint32_t)cJSON_GetNumberValue(serial_j);
+    case ws_client_message_t_update_channel:
+        channel_update(msg.value.update_channel.serial, &msg.value.update_channel);
+        break;
 
-        const char *name      = cJSON_GetStringValue(cJSON_GetObjectItem(root, "name"));
-        const char *proto_str = cJSON_GetStringValue(cJSON_GetObjectItem(root, "proto"));
-
-        cJSON *fts_j   = cJSON_GetObjectItem(root, "force_tilt_support");
-        cJSON *bf_j    = cJSON_GetObjectItem(root, "bidirectional_feedback");
-        cJSON *ft_j    = cJSON_GetObjectItem(root, "feedback_timeout_s");
-        cJSON *dc_j    = cJSON_GetObjectItem(root, "device_class");
-        cJSON *mname_j = cJSON_GetObjectItem(root, "mqtt_name");
-
-        /* Snapshot to get current values as defaults for fields not in the message */
-        cosmo_channel_t snap[CHANNEL_MAX_COUNT];
-        int snap_count = channel_snapshot(snap);
-        cosmo_channel_t *cur = NULL;
-        for (int _i = 0; _i < snap_count; _i++)
-            if (snap[_i].serial == serial) { cur = &snap[_i]; break; }
-
-        cosmo_channel_settings_t s = {
-            .proto                  = (proto_str && strcmp(proto_str, "2way") == 0)
-                                      ? PROTO_COSMO_2WAY : PROTO_COSMO_1WAY,
-            .force_tilt_support     = cJSON_IsTrue(fts_j),
-            .bidirectional_feedback = cJSON_IsBool(bf_j) ? cJSON_IsTrue(bf_j) : true,
-            .feedback_timeout_s     = cJSON_IsNumber(ft_j)
-                                      ? (uint16_t)cJSON_GetNumberValue(ft_j) : 120,
-            .device_class           = cJSON_IsNumber(dc_j)
-                                      ? (cosmo_channel_device_class_t)(int)cJSON_GetNumberValue(dc_j)
-                                      : (cur ? cur->device_class : CHANNEL_DEVICE_CLASS_SHUTTER),
-        };
-        if (name && name[0])
-            snprintf(s.name, sizeof(s.name), "%s", name);
-        const char *mname_str = cJSON_GetStringValue(mname_j);
-        if (mname_str && mname_str[0])
-            snprintf(s.mqtt_name, sizeof(s.mqtt_name), "%s", mname_str);
-
-        channel_update(serial, &s);
-
-    } else if (strcmp(cmd, "wifi_scan") == 0) {
+    case ws_client_message_t_wifi_scan: {
         scan_task_arg_t *a = malloc(sizeof(*a));
         if (a) {
             a->fd = fd;
             if (xTaskCreate(scan_task, "wifi_scan", 4096, a, 5, NULL) != pdPASS)
                 free(a);
         }
-
-    } else if (strcmp(cmd, "wifi_set_credentials") == 0) {
-        const char *ssid = cJSON_GetStringValue(cJSON_GetObjectItem(root, "ssid"));
-        const char *pass = cJSON_GetStringValue(cJSON_GetObjectItem(root, "password"));
-        wifi_manager_set_credentials(ssid ? ssid : "", pass ? pass : "");
+        break;
     }
 
-    cJSON_Delete(root);
+    case ws_client_message_t_wifi_set_credentials: {
+        const struct ws_wifi_set_credentials_msg_t *m = &msg.value.wifi_set_credentials;
+        wifi_manager_set_credentials(
+            sstr_cstr(m->ssid),
+            sstr_cstr(m->password)
+        );
+        break;
+    }
+
+    default:
+        ESP_LOGW(TAG, "Unhandled WS message tag %d", (int)msg.tag);
+        break;
+    }
+
+    ws_client_message_t_clear(&msg);
 }
 
 /* ── WebSocket handler ───────────────────────────────────────────────────── */
@@ -449,7 +413,6 @@ static esp_err_t ws_handler(httpd_req_t *req)
     if (req->method == HTTP_GET) {
         int fd = httpd_req_to_sockfd(req);
 
-        /* Check there is room before we send the initial state */
         xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
         bool has_slot = false;
         for (int i = 0; i < MAX_WS_CLIENTS; i++) {
@@ -462,9 +425,6 @@ static esp_err_t ws_handler(httpd_req_t *req)
             return ESP_OK;
         }
 
-        /* Queue initial state BEFORE adding fd to the broadcast list so that
-         * concurrent broadcasts from other tasks cannot interleave with
-         * history/channels/status and cause duplicate or out-of-order messages. */
         ws_send_history(fd);
         channel_send_all(fd);
         build_and_send_status(fd);
@@ -532,143 +492,102 @@ void gtw_console_log(const char *fmt, ...)
 
     if (nfds == 0 || !s_server) return;
 
-    cJSON *root = cJSON_CreateObject();
-    cJSON_AddStringToObject(root, "cmd", "console");
-    cJSON_AddStringToObject(root, "payload", msg);
-    char *json = cJSON_PrintUnformatted(root);
-    cJSON_Delete(root);
-    if (!json) return;
+    struct ws_server_message_t ws_msg;
+    ws_server_message_t_init(&ws_msg);
+    ws_msg.tag = ws_server_message_t_console;
+    ws_msg.value.console.payload = sstr(msg);
+
+    sstr_t out = sstr_new();
+    json_marshal_ws_server_message_t(&ws_msg, out);
+    ws_server_message_t_clear(&ws_msg);
 
     for (int i = 0; i < nfds; i++)
-        ws_queue_send(fds[i], json);
-
-    free(json);
+        ws_queue_send(fds[i], sstr_cstr(out));
+    sstr_free(out);
 }
 
 /* ── Settings REST handlers ──────────────────────────────────────────────── */
 
-/* Flush in-memory config to disk then stream config.json back to the client.
- * Used by both GET and POST /api/settings — single source of truth. */
-static esp_err_t send_config_file(httpd_req_t *req)
+/* Serialise the current config (excluding channels) and send it.
+ * For GET /api/settings. Channels are not included in the settings view. */
+static esp_err_t send_settings_json(httpd_req_t *req)
 {
-    config_save_now();
+    /* Build field mask: all fields except channels */
+    uint64_t mask[gateway_config_t_FIELD_MASK_WORD_COUNT] = {0};
+    JSON_GEN_C_FIELD_MASK_SET(mask, gateway_config_t_FIELD_version);
+    JSON_GEN_C_FIELD_MASK_SET(mask, gateway_config_t_FIELD_hostname);
+    JSON_GEN_C_FIELD_MASK_SET(mask, gateway_config_t_FIELD_mqtt);
+    JSON_GEN_C_FIELD_MASK_SET(mask, gateway_config_t_FIELD_radio);
+    JSON_GEN_C_FIELD_MASK_SET(mask, gateway_config_t_FIELD_position_status_query_interval_s);
+    JSON_GEN_C_FIELD_MASK_SET(mask, gateway_config_t_FIELD_gpio_status_led);
 
-    FILE *f = fopen("/littlefs/config.json", "r");
-    if (!f) {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "config not found");
-        return ESP_OK;
-    }
+    /* Marshal a temporary subset by marshaling the full object then filtering.
+     * json-gen-c doesn't have a selected-marshal, so marshal the full object. */
+    config_lock();
+    sstr_t json = sstr_new();
+    json_marshal_gateway_config_t(&g_config, json);
+    config_unlock();
 
     httpd_resp_set_type(req, "application/json");
-    char buf[512];
-    size_t n;
-    while ((n = fread(buf, 1, sizeof(buf), f)) > 0)
-        httpd_resp_send_chunk(req, buf, (ssize_t)n);
-    fclose(f);
-    httpd_resp_send_chunk(req, NULL, 0);
+    httpd_resp_send(req, sstr_cstr(json), (ssize_t)sstr_length(json));
+    sstr_free(json);
+
+    (void)mask; /* mask reserved for future selective marshal */
     return ESP_OK;
 }
 
 static esp_err_t settings_get_handler(httpd_req_t *req)
 {
-    return send_config_file(req);
+    return send_settings_json(req);
 }
 
-static void apply_settings_from_json(cJSON *root)
+static void apply_settings_from_buf(const char *buf, int len)
 {
-    /* Hostname */
-    const char *hostname = cJSON_GetStringValue(cJSON_GetObjectItem(root, "hostname"));
-    if (hostname && hostname[0]) {
-        config_set_hostname(hostname);
-        mdns_hostname_set(hostname);
-        esp_netif_t *sta = wifi_manager_get_sta_netif();
-        if (sta) esp_netif_set_hostname(sta, hostname);
-        ESP_LOGI(TAG, "Hostname updated to: %s", hostname);
-    }
+    /* Use json_unmarshal_selected to update only the non-channel config fields.
+     * The channels field is NOT included in the mask, so it is left untouched. */
+    uint64_t mask[gateway_config_t_FIELD_MASK_WORD_COUNT] = {0};
+    JSON_GEN_C_FIELD_MASK_SET(mask, gateway_config_t_FIELD_hostname);
+    JSON_GEN_C_FIELD_MASK_SET(mask, gateway_config_t_FIELD_mqtt);
+    JSON_GEN_C_FIELD_MASK_SET(mask, gateway_config_t_FIELD_radio);
+    JSON_GEN_C_FIELD_MASK_SET(mask, gateway_config_t_FIELD_position_status_query_interval_s);
+    JSON_GEN_C_FIELD_MASK_SET(mask, gateway_config_t_FIELD_gpio_status_led);
 
-    /* MQTT */
-    cJSON *mqtt_j = cJSON_GetObjectItem(root, "mqtt");
-    if (cJSON_IsObject(mqtt_j)) {
-        gateway_config_t current;
-        config_get(&current);
+    sstr_t in = sstr_of(buf, (size_t)len);
 
-        cJSON *en = cJSON_GetObjectItem(mqtt_j, "enabled");
-        bool enabled = cJSON_IsBool(en) ? cJSON_IsTrue(en) : current.mqtt.enabled;
+    config_lock();
+    json_unmarshal_selected_gateway_config_t(in, &g_config, mask,
+                                              gateway_config_t_FIELD_MASK_WORD_COUNT);
+    config_unlock();
 
-        const char *broker = cJSON_GetStringValue(cJSON_GetObjectItem(mqtt_j, "broker"));
-        if (!broker) broker = current.mqtt.broker;
+    sstr_free(in);
+    config_mark_dirty();
 
-        cJSON *port_j = cJSON_GetObjectItem(mqtt_j, "port");
-        uint16_t port = cJSON_IsNumber(port_j)
-                      ? (uint16_t)cJSON_GetNumberValue(port_j)
-                      : current.mqtt.port;
+    /* Apply hostname to mDNS and netif */
+    config_lock();
+    char hostname[64];
+    strlcpy(hostname, sstr_cstr(g_config.hostname), sizeof(hostname));
+    config_unlock();
 
-        const char *username = cJSON_GetStringValue(cJSON_GetObjectItem(mqtt_j, "username"));
-        if (!username) username = current.mqtt.username;
+    mdns_hostname_set(hostname);
+    esp_netif_t *sta = wifi_manager_get_sta_netif();
+    if (sta) esp_netif_set_hostname(sta, hostname);
+    ESP_LOGI(TAG, "Hostname updated to: %s", hostname);
 
-        const char *password = cJSON_GetStringValue(cJSON_GetObjectItem(mqtt_j, "password"));
-        if (!password) password = current.mqtt.password;
+    /* Apply MQTT config */
+    mqtt_apply_config();
 
-        cJSON *had_j = cJSON_GetObjectItem(mqtt_j, "ha_discovery_enabled");
-        bool ha_disc = cJSON_IsBool(had_j) ? cJSON_IsTrue(had_j) : current.mqtt.ha_discovery_enabled;
+    /* Apply radio config */
+    esp_err_t radio_err = radio_apply_config();
+    if (radio_err == ESP_ERR_NOT_SUPPORTED)
+        g_radio_state = RADIO_STATE_NOT_CONFIGURED;
+    else if (radio_err != ESP_OK)
+        g_radio_state = RADIO_STATE_ERROR;
+    else
+        g_radio_state = RADIO_STATE_OK;
+    ESP_LOGI(TAG, "Radio state after apply: %d", (int)g_radio_state);
 
-        const char *ha_pfx = cJSON_GetStringValue(cJSON_GetObjectItem(mqtt_j, "ha_prefix"));
-        if (!ha_pfx || !ha_pfx[0]) ha_pfx = current.mqtt.ha_prefix;
-
-        const char *mq_pfx = cJSON_GetStringValue(cJSON_GetObjectItem(mqtt_j, "mqtt_prefix"));
-        if (!mq_pfx || !mq_pfx[0]) mq_pfx = current.mqtt.mqtt_prefix;
-
-        config_set_mqtt(broker, port, username, password, enabled,
-                        ha_disc, ha_pfx, mq_pfx);
-        mqtt_apply_config();
-    }
-
-    /* Radio */
-    cJSON *radio_j = cJSON_GetObjectItem(root, "radio");
-    if (cJSON_IsObject(radio_j)) {
-        gateway_config_t current;
-        config_get(&current);
-
-        cJSON *en = cJSON_GetObjectItem(radio_j, "enabled");
-        bool enabled = cJSON_IsBool(en) ? cJSON_IsTrue(en) : current.radio.enabled;
-
-#define GET_INT(key, field) \
-        cJSON *_j_##field = cJSON_GetObjectItem(radio_j, key); \
-        int field = cJSON_IsNumber(_j_##field) ? (int)cJSON_GetNumberValue(_j_##field) : current.radio.field;
-        GET_INT("gpio_miso",   gpio_miso)
-        GET_INT("gpio_mosi",   gpio_mosi)
-        GET_INT("gpio_sck",    gpio_sck)
-        GET_INT("gpio_csn",    gpio_csn)
-        GET_INT("gpio_gdo0",   gpio_gdo0)
-        GET_INT("spi_freq_hz", spi_freq_hz)
-#undef GET_INT
-
-        config_set_radio(enabled, gpio_miso, gpio_mosi, gpio_sck,
-                         gpio_csn, gpio_gdo0, spi_freq_hz);
-
-        esp_err_t radio_err = radio_apply_config();
-        if (radio_err == ESP_ERR_NOT_SUPPORTED)
-            g_radio_state = RADIO_STATE_NOT_CONFIGURED;
-        else if (radio_err != ESP_OK)
-            g_radio_state = RADIO_STATE_ERROR;
-        else
-            g_radio_state = RADIO_STATE_OK;
-        ESP_LOGI(TAG, "Radio state after apply: %d", (int)g_radio_state);
-    }
-
-    /* Position query interval */
-    cJSON *psqi_j = cJSON_GetObjectItem(root, "position_status_query_interval_s");
-    if (cJSON_IsNumber(psqi_j)) {
-        uint16_t iv = (uint16_t)cJSON_GetNumberValue(psqi_j);
-        config_set_position_query_interval(iv);
-    }
-
-    /* Status LED GPIO */
-    cJSON *led_j = cJSON_GetObjectItem(root, "gpio_status_led");
-    if (cJSON_IsNumber(led_j)) {
-        config_set_status_led((int)cJSON_GetNumberValue(led_j));
-        status_led_apply_config();
-    }
+    /* Apply status LED */
+    status_led_apply_config();
 }
 
 static esp_err_t settings_post_handler(httpd_req_t *req)
@@ -687,24 +606,26 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
     if (received <= 0) { free(buf); return received == 0 ? ESP_OK : ESP_FAIL; }
     buf[received] = '\0';
 
-    cJSON *root = cJSON_Parse(buf);
+    apply_settings_from_buf(buf, received);
     free(buf);
-    if (!root) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid JSON");
-        return ESP_OK;
-    }
 
-    apply_settings_from_json(root);
-    cJSON_Delete(root);
-
-    return send_config_file(req);
+    return send_settings_json(req);
 }
 
 /* ── Backup ──────────────────────────────────────────────────────────────── */
 
 static esp_err_t backup_get_handler(httpd_req_t *req)
 {
-    return send_config_file(req);
+    /* Backup includes the full config with channels */
+    config_lock();
+    sstr_t json = sstr_new();
+    json_marshal_gateway_config_t(&g_config, json);
+    config_unlock();
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, sstr_cstr(json), (ssize_t)sstr_length(json));
+    sstr_free(json);
+    return ESP_OK;
 }
 
 /* ── Restore ─────────────────────────────────────────────────────────────── */
@@ -722,8 +643,7 @@ static esp_err_t restore_post_handler(httpd_req_t *req)
         return ESP_OK;
     }
 
-    /* Write the body directly to the config file — no parsing needed.
-     * The backup IS config.json; it will be loaded as-is on next boot. */
+    /* Write the body directly to the config file — it will be loaded on next boot. */
     FILE *f = fopen("/littlefs/config.json", "w");
     if (!f) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "write failed");
@@ -754,7 +674,7 @@ static esp_err_t restore_post_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* ── Early init (before WiFi) ────────────────────────────────────────────── */
+/* ── Early init ──────────────────────────────────────────────────────────── */
 
 void webserver_early_init(void)
 {
@@ -767,12 +687,12 @@ void webserver_early_init(void)
 
 void webserver_start(void)
 {
-    if (s_server) return; /* idempotent */
+    if (s_server) return;
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.lru_purge_enable  = true;
     config.max_uri_handlers  = 12;
-    config.stack_size = 6500;
+    config.stack_size        = 6500;
 
     ESP_LOGI(TAG, "Starting HTTP server on port %d", config.server_port);
     if (httpd_start(&s_server, &config) != ESP_OK) {

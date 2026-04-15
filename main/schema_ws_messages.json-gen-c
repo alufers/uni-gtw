@@ -41,11 +41,17 @@ struct ws_wifi_scan_result_msg_t {
     wifi_ap_info_t payload[];
 }
 
+// Sent when a channel is deleted; serial identifies the removed channel
+struct ws_channel_deleted_msg_t {
+    uint32_t serial;
+}
+
 oneof ws_server_message_t {
     @tag "cmd"
     ws_console_msg_t console;
     ws_channels_msg_t channels;
     ws_channel_update_msg_t channel_update;
+    ws_channel_deleted_msg_t channel_deleted;
     ws_status_msg_t status;
     ws_wifi_scan_result_msg_t wifi_scan_result;
 }
