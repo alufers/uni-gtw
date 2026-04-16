@@ -69,68 +69,49 @@ static void set_query_ts(uint32_t serial, time_t ts)
 
 /* ── Position query logic ────────────────────────────────────────────────── */
 
-/* Lightweight per-channel info collected under lock for position querying. */
-typedef struct {
-    uint32_t serial;
-    bool     is_2way;
-    bool     bidirectional_feedback;
-    char     name[64];
-} ch_query_info_t;
-
 static void maybe_query_position(void)
 {
-    config_lock();
-    uint16_t interval = (uint16_t)g_config.position_status_query_interval_s;
-    config_unlock();
-
-    if (interval == 0)
-        return;
-
     time_t now = time(NULL);
     if (now > 0 && now < s_inhibit_until)
         return;
 
-    /* Collect minimal channel info under lock (no heap allocation needed). */
-    ch_query_info_t infos[CHANNEL_MAX_COUNT];
-    int count = 0;
+    uint32_t best_serial = 0;
+    char     best_name[64] = {0};
 
     config_lock();
-    for (int i = 0; i < g_config.channels_len && i < CHANNEL_MAX_COUNT; i++) {
-        struct cosmo_channel_t *ch = &g_config.channels[i];
-        infos[count].serial               = ch->serial;
-        infos[count].is_2way              = sstr_compare_c(ch->proto, "2way") == 0;
-        infos[count].bidirectional_feedback = ch->bidirectional_feedback != 0;
-        snprintf(infos[count].name, sizeof(infos[count].name),
-                 "%s", sstr_cstr(ch->name));
-        count++;
+
+    uint16_t interval = (uint16_t)g_config.position_status_query_interval_s;
+    if (interval == 0) {
+        config_unlock();
+        return;
     }
-    config_unlock();
 
     /* Find the eligible channel least-recently queried. */
-    int    best_idx = -1;
-    time_t best_ts  = now; /* only entries older than interval qualify */
+    time_t best_ts = now; /* only entries older than interval qualify */
 
-    for (int i = 0; i < count; i++) {
-        if (!infos[i].is_2way)
-            continue;
-        if (!infos[i].bidirectional_feedback)
+    for (int i = 0; i < g_config.channels_len && i < CHANNEL_MAX_COUNT; i++) {
+        struct cosmo_channel_t *ch = &g_config.channels[i];
+        if (!ch->bidirectional_feedback)
             continue;
 
-        time_t ch_ts = get_query_ts(infos[i].serial);
+        time_t ch_ts = get_query_ts(ch->serial);
         /* Qualify if never queried OR enough time has elapsed since last query */
-        if (ch_ts == 0 || now - ch_ts >= (time_t)interval) {
-            if (best_idx < 0 || ch_ts < best_ts) {
-                best_ts  = ch_ts;
-                best_idx = i;
-            }
+        if ((ch_ts == 0 || now - ch_ts >= (time_t)interval) &&
+            (best_serial == 0 || ch_ts < best_ts)) {
+            best_ts     = ch_ts;
+            best_serial = ch->serial;
+            snprintf(best_name, sizeof(best_name), "%s", sstr_cstr(ch->name));
         }
     }
 
-    if (best_idx >= 0) {
-        ESP_LOGI(TAG, "Auto-querying position for channel '%s'",
-                 infos[best_idx].name);
-        channel_send_cmd(infos[best_idx].serial, COSMO_BTN_REQUEST_POSITION, 0);
-        set_query_ts(infos[best_idx].serial, now);
+    if (best_serial != 0)
+        set_query_ts(best_serial, now);
+
+    config_unlock();
+
+    if (best_serial != 0) {
+        ESP_LOGI(TAG, "Auto-querying position for channel '%s'", best_name);
+        channel_send_cmd(best_serial, COSMO_BTN_REQUEST_POSITION, 0);
     }
 }
 
