@@ -1,6 +1,8 @@
 #include "background_worker.h"
-#include "config.h"
 #include "channel.h"
+#include "config.h"
+#include "radio.h"
+#include "utils.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -23,59 +25,24 @@ static TimerHandle_t s_query_timer = NULL; /* auto-reload, CHECK_INTERVAL_MS */
 
 static time_t s_inhibit_until = 0; /* epoch second; 0 = not inhibited */
 
-/* ── Per-channel query tracking ──────────────────────────────────────────── */
-
-typedef struct {
-    uint32_t serial;
-    time_t   ts; /* last time we sent REQUEST_POSITION; 0 = never */
-} query_track_t;
-
-static query_track_t s_query_track[CHANNEL_MAX_COUNT];
-
 /* ── Wakeup period for the query timer ───────────────────────────────────── */
 
 /* The query timer fires every CHECK_INTERVAL_MS to check for due channels. */
 #define CHECK_INTERVAL_MS 10000
 
-/* ── Helpers ─────────────────────────────────────────────────────────────── */
-
-static time_t get_query_ts(uint32_t serial)
-{
-    for (int i = 0; i < CHANNEL_MAX_COUNT; i++) {
-        if (s_query_track[i].serial == serial)
-            return s_query_track[i].ts;
-    }
-    return 0;
-}
-
-static void set_query_ts(uint32_t serial, time_t ts)
-{
-    /* Update existing entry */
-    for (int i = 0; i < CHANNEL_MAX_COUNT; i++) {
-        if (s_query_track[i].serial == serial) {
-            s_query_track[i].ts = ts;
-            return;
-        }
-    }
-    /* Insert into first free slot */
-    for (int i = 0; i < CHANNEL_MAX_COUNT; i++) {
-        if (s_query_track[i].serial == 0) {
-            s_query_track[i].serial = serial;
-            s_query_track[i].ts     = ts;
-            return;
-        }
-    }
-}
-
 /* ── Position query logic ────────────────────────────────────────────────── */
 
 static void maybe_query_position(void)
 {
+    if (!utils_time_is_valid())
+        return;
     time_t now = time(NULL);
-    if (now > 0 && now < s_inhibit_until)
+
+    if (now < s_inhibit_until)
         return;
 
     uint32_t best_serial = 0;
+    int      best_idx    = -1;
     char     best_name[64] = {0};
 
     config_lock();
@@ -89,23 +56,24 @@ static void maybe_query_position(void)
     /* Find the eligible channel least-recently queried. */
     time_t best_ts = now; /* only entries older than interval qualify */
 
-    for (int i = 0; i < g_config.channels_len && i < CHANNEL_MAX_COUNT; i++) {
+    for (int i = 0; i < g_config.channels_len; i++) {
         struct cosmo_channel_t *ch = &g_config.channels[i];
         if (!ch->bidirectional_feedback)
             continue;
 
-        time_t ch_ts = get_query_ts(ch->serial);
+        time_t ch_ts = (time_t)ch->last_position_query_ts;
         /* Qualify if never queried OR enough time has elapsed since last query */
         if ((ch_ts == 0 || now - ch_ts >= (time_t)interval) &&
             (best_serial == 0 || ch_ts < best_ts)) {
             best_ts     = ch_ts;
             best_serial = ch->serial;
+            best_idx    = i;
             snprintf(best_name, sizeof(best_name), "%s", sstr_cstr(ch->name));
         }
     }
 
     if (best_serial != 0)
-        set_query_ts(best_serial, now);
+        g_config.channels[best_idx].last_position_query_ts = (int64_t)now;
 
     config_unlock();
 
@@ -126,15 +94,16 @@ static void save_timer_cb(TimerHandle_t t)
 static void query_timer_cb(TimerHandle_t t)
 {
     (void)t;
+    if (radio_get_state() != RADIO_STATE_OK)
+        return;
     maybe_query_position();
+    channel_check_timeouts();
 }
 
 /* ── Public API ──────────────────────────────────────────────────────────── */
 
 void background_worker_init(void)
 {
-    memset(s_query_track, 0, sizeof(s_query_track));
-
     s_save_timer = xTimerCreate("cfg_save", pdMS_TO_TICKS(5000),
                                 pdFALSE, NULL, save_timer_cb);
 

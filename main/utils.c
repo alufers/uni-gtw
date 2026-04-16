@@ -2,12 +2,23 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <time.h>
 
 #include "esp_log.h"
 #include "esp_random.h"
 #include "psa/crypto.h"
 
 static const char *TAG = "utils";
+
+/* ── Time ────────────────────────────────────────────────────────────────── */
+
+/* 2020-01-01 00:00:00 UTC */
+#define MIN_VALID_TIME ((time_t)1577836800)
+
+bool utils_time_is_valid(void)
+{
+    return time(NULL) >= MIN_VALID_TIME;
+}
 
 /* ── Base64 ──────────────────────────────────────────────────────────────── */
 

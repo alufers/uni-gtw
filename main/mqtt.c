@@ -2,6 +2,7 @@
 #include "background_worker.h"
 #include "channel.h"
 #include "config.h"
+#include "radio.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -489,7 +490,9 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
         int dlen = event->data_len < 63 ? event->data_len : 63;
         memcpy(data, event->data, (size_t)dlen);
 
-        if (strncmp(subtopic, "command", (size_t)subtopic_len) == 0) {
+        if (radio_get_state() != RADIO_STATE_OK) {
+            ESP_LOGW(TAG, "Ignoring MQTT command: radio not available");
+        } else if (strncmp(subtopic, "command", (size_t)subtopic_len) == 0) {
             if (strcmp(data, "OPEN") == 0 || strcmp(data, "ON") == 0)
                 channel_send_cmd(ch.serial, COSMO_BTN_UP, 0);
             else if (strcmp(data, "CLOSE") == 0 || strcmp(data, "OFF") == 0)

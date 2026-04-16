@@ -38,3 +38,7 @@ esp_err_t channel_find_by_mqtt_name(const char *mqtt_name, struct cosmo_channel_
  * Caller must cosmo_channel_t_clear(dst) when done with it. */
 void channel_deep_copy(struct cosmo_channel_t *dst, const struct cosmo_channel_t *src);
 
+/* Check all channels for feedback timeout; time out at most one per call.
+ * No-op if NTP has not yet synced (time < 2020). Called by background_worker. */
+void channel_check_timeouts(void);
+

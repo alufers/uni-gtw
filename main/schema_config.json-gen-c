@@ -108,25 +108,38 @@ struct radio_config_t {
     int spi_freq_hz;
 }
 
+enum channel_state_type_t {
+    reported,
+    optimistic,
+    timed_out
+}
+
 // cosmo_channel_t — serialised by channel_to_cjson()
 // proto is kept as sstr_t ("1way"/"2way" cannot be C identifiers)
 struct cosmo_channel_t {
+    // ── Config ───────────────────────────────────────────────────────────────
     uint32_t serial;
     sstr_t name;
     sstr_t proto;
-    uint16_t counter;
-    channel_state_t state;
-    int8_t rssi;
-    int64_t last_seen_ts;
-    nullable int16_t position;  // 0–100 % open; null when 1-way or position unknown
     bool reports_tilt_support;
     bool force_tilt_support;
     bool bidirectional_feedback;
     uint16_t feedback_timeout_s;
-    bool is_state_optimistic;
     channel_device_class_t device_class;
     sstr_t mqtt_name;
     uint32_t external_remotes[];  // serials of physical remotes paired to the same motor
+
+    // ── State ────────────────────────────────────────────────────────────────
+    uint16_t counter;
+    channel_state_t state;
+    channel_state_type_t state_type;
+    int8_t rssi;
+    nullable int16_t position;  // 0–100 % open; null when 1-way or position unknown
+
+    // ── Timestamps ───────────────────────────────────────────────────────────
+    int64_t last_seen_ts;
+    int64_t last_command_ts;
+    int64_t last_position_query_ts;
 }
 
 // Top-level persisted config (gateway_config_t in C)

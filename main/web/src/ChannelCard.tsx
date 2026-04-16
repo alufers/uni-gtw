@@ -6,6 +6,7 @@ import {
   RotateCw,
   RotateCcw,
   Hourglass,
+  CircleAlert,
   Power,
   PowerOff,
   Menu,
@@ -97,7 +98,7 @@ function StateChip({ ch }: { ch: Channel }) {
         {ch.state === "partially_open" && ch.position !== null && ch.position !== undefined && (
           <span class="font-bold">{ch.position}%</span>
         )}
-        {ch.is_state_optimistic && (
+        {ch.state_type === "optimistic" && (
           <span
             class={`inline-flex items-center text-current opacity-70 ${
               ch.state === "opening" || ch.state === "closing" || ch.state === "in_motion"
@@ -107,6 +108,14 @@ function StateChip({ ch }: { ch: Channel }) {
             title="Optimistic — awaiting device confirmation"
           >
             <Hourglass size={10} />
+          </span>
+        )}
+        {ch.state_type === "timed_out" && (
+          <span
+            class="inline-flex items-center text-red-400 opacity-90"
+            title="Timed out — no device confirmation received"
+          >
+            <CircleAlert size={10} />
           </span>
         )}
       </span>

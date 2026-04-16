@@ -18,8 +18,6 @@
 
 static const char *TAG = "uni-gtw";
 
-radio_state_t g_radio_state = RADIO_STATE_NOT_CONFIGURED;
-
 void app_main(void)
 {
     esp_err_t ret = nvs_flash_init();
@@ -87,14 +85,8 @@ void app_main(void)
     mdns_service_add(NULL, "_uni_gtw", "_tcp", 80, NULL, 0);
     ESP_LOGI(TAG, "mDNS started: %s.local", hostname);
 
-    /* Radio init — result sets the three-state global */
-    esp_err_t radio_err = radio_init();
-    if (radio_err == ESP_ERR_NOT_SUPPORTED)
-        g_radio_state = RADIO_STATE_NOT_CONFIGURED;
-    else if (radio_err != ESP_OK)
-        g_radio_state = RADIO_STATE_ERROR;
-    else
-        g_radio_state = RADIO_STATE_OK;
+    /* Radio init */
+    radio_init();
 
     /* MQTT init */
     mqtt_init();

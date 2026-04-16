@@ -7,10 +7,6 @@
 #include "freertos/semphr.h"
 #include "json.gen.h"
 
-/* ── Channel limit ───────────────────────────────────────────────────────── */
-
-#define CHANNEL_MAX_COUNT 16
-
 /* ── Default CC1101 pin assignments and SPI speed ────────────────────────── */
 
 #define CONFIG_RADIO_DEFAULT_MISO      19

@@ -26,7 +26,6 @@
 
 static const char *TAG = "webserver";
 
-extern radio_state_t g_radio_state;
 extern int           g_mqtt_status; /* enum mqtt_status_t */
 
 /* ── Config ──────────────────────────────────────────────────────────────── */
@@ -239,7 +238,7 @@ static void build_and_send_status(int fd /* -1 = broadcast */)
 
     /* Map radio_state_t to radio_status_t */
     int radio_status;
-    switch (g_radio_state) {
+    switch (radio_get_state()) {
     case RADIO_STATE_OK:             radio_status = radio_status_t_ok; break;
     case RADIO_STATE_ERROR:          radio_status = radio_status_t_error; break;
     default:                         radio_status = radio_status_t_not_configured; break;
@@ -694,14 +693,8 @@ static void apply_settings_from_buf(const char *buf, int len)
     mqtt_apply_config();
 
     /* Apply radio config */
-    esp_err_t radio_err = radio_apply_config();
-    if (radio_err == ESP_ERR_NOT_SUPPORTED)
-        g_radio_state = RADIO_STATE_NOT_CONFIGURED;
-    else if (radio_err != ESP_OK)
-        g_radio_state = RADIO_STATE_ERROR;
-    else
-        g_radio_state = RADIO_STATE_OK;
-    ESP_LOGI(TAG, "Radio state after apply: %d", (int)g_radio_state);
+    radio_apply_config();
+    ESP_LOGI(TAG, "Radio state after apply: %d", (int)radio_get_state());
 
     /* Apply status LED */
     status_led_apply_config();

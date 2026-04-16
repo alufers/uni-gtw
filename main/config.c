@@ -86,9 +86,9 @@ static void do_load(void)
     }
 
     config_lock();
-    /* Runtime-only fields are not persisted: reset is_state_optimistic. */
+    /* Runtime-only fields are not persisted: reset state_type on load. */
     for (int i = 0; i < g_config.channels_len; i++)
-        g_config.channels[i].is_state_optimistic = 0;
+        g_config.channels[i].state_type = channel_state_type_t_reported;
 
     ESP_LOGI(TAG, "Loaded config: hostname=%s, %d channels",
              sstr_cstr(g_config.hostname), g_config.channels_len);

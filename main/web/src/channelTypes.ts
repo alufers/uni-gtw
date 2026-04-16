@@ -38,7 +38,7 @@ export interface Channel {
   force_tilt_support: boolean;
   bidirectional_feedback: boolean;
   feedback_timeout_s: number;
-  is_state_optimistic: boolean;
+  state_type: "reported" | "optimistic" | "timed_out";
   device_class: DeviceClass;
   mqtt_name: string;
   external_remotes: number[];

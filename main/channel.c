@@ -1,6 +1,7 @@
 #include "channel.h"
 #include "config.h"
 #include "mqtt.h"
+#include "utils.h"
 #include "radio.h"
 #include "webserver.h"
 
@@ -13,7 +14,6 @@
 #include "esp_log.h"
 #include "esp_random.h"
 #include "freertos/FreeRTOS.h"
-#include "freertos/timers.h"
 
 static const char *TAG = "channel";
 
@@ -52,10 +52,12 @@ void channel_deep_copy(struct cosmo_channel_t *dst, const struct cosmo_channel_t
     dst->has_position          = src->has_position;
     dst->reports_tilt_support  = src->reports_tilt_support;
     dst->force_tilt_support    = src->force_tilt_support;
-    dst->bidirectional_feedback = src->bidirectional_feedback;
-    dst->feedback_timeout_s    = src->feedback_timeout_s;
-    dst->is_state_optimistic   = src->is_state_optimistic;
-    dst->device_class          = src->device_class;
+    dst->bidirectional_feedback  = src->bidirectional_feedback;
+    dst->feedback_timeout_s      = src->feedback_timeout_s;
+    dst->state_type              = src->state_type;
+    dst->last_command_ts         = src->last_command_ts;
+    dst->last_position_query_ts  = src->last_position_query_ts;
+    dst->device_class            = src->device_class;
     dst->mqtt_name             = sstr_dup(src->mqtt_name);
 
     if (src->external_remotes_len > 0 && src->external_remotes) {
@@ -91,103 +93,6 @@ static void broadcast_channel_deleted(uint32_t serial)
     webserver_ws_broadcast_json(buf);
 }
 
-/* ── Feedback timers ─────────────────────────────────────────────────────── */
-
-typedef struct {
-    uint32_t      serial;
-    TimerHandle_t timer;
-} feedback_timer_slot_t;
-
-static feedback_timer_slot_t s_feedback_timers[CHANNEL_MAX_COUNT];
-
-static void feedback_timer_cb(TimerHandle_t t)
-{
-    uint32_t serial = (uint32_t)(uintptr_t)pvTimerGetTimerID(t);
-
-    config_lock();
-    struct cosmo_channel_t *ch = NULL;
-    for (int i = 0; i < g_config.channels_len; i++) {
-        if (g_config.channels[i].serial == serial) {
-            ch = &g_config.channels[i];
-            break;
-        }
-    }
-    if (!ch) { config_unlock(); return; }
-
-    if (ch->state == channel_state_t_opening  ||
-        ch->state == channel_state_t_closing  ||
-        ch->state == channel_state_t_in_motion) {
-        ch->state = channel_state_t_partially_open;
-    }
-    ch->is_state_optimistic = 0;
-
-    struct cosmo_channel_t copy;
-    channel_deep_copy(&copy, ch);
-    config_unlock();
-
-    ESP_LOGI(TAG, "Feedback timer expired for serial=0x%08X, state→partially_open",
-             (unsigned)serial);
-    broadcast_channel_update(&copy);
-    mqtt_publish_channel_update(&copy);
-    cosmo_channel_t_clear(&copy);
-}
-
-static feedback_timer_slot_t *feedback_timer_find_slot(uint32_t serial)
-{
-    feedback_timer_slot_t *empty = NULL;
-    for (int i = 0; i < CHANNEL_MAX_COUNT; i++) {
-        if (s_feedback_timers[i].serial == serial && serial != 0)
-            return &s_feedback_timers[i];
-        if (!empty && s_feedback_timers[i].serial == 0)
-            empty = &s_feedback_timers[i];
-    }
-    return empty;
-}
-
-static void feedback_timer_arm(uint32_t serial, uint16_t timeout_s)
-{
-    if (timeout_s == 0) return;
-    feedback_timer_slot_t *slot = feedback_timer_find_slot(serial);
-    if (!slot) return;
-
-    TickType_t ticks = pdMS_TO_TICKS((uint32_t)timeout_s * 1000u);
-    if (slot->timer == NULL) {
-        slot->serial = serial;
-        slot->timer  = xTimerCreate("fb_tmr", ticks, pdFALSE,
-                                    (void *)(uintptr_t)serial,
-                                    feedback_timer_cb);
-        if (slot->timer)
-            xTimerStart(slot->timer, 0);
-    } else {
-        xTimerChangePeriod(slot->timer, ticks, 0);
-    }
-}
-
-static void feedback_timer_cancel(uint32_t serial)
-{
-    for (int i = 0; i < CHANNEL_MAX_COUNT; i++) {
-        if (s_feedback_timers[i].serial == serial && s_feedback_timers[i].timer) {
-            xTimerStop(s_feedback_timers[i].timer, 0);
-            return;
-        }
-    }
-}
-
-static void feedback_timer_destroy(uint32_t serial)
-{
-    for (int i = 0; i < CHANNEL_MAX_COUNT; i++) {
-        if (s_feedback_timers[i].serial == serial) {
-            if (s_feedback_timers[i].timer) {
-                xTimerStop(s_feedback_timers[i].timer, 0);
-                xTimerDelete(s_feedback_timers[i].timer, 0);
-            }
-            s_feedback_timers[i].serial = 0;
-            s_feedback_timers[i].timer  = NULL;
-            return;
-        }
-    }
-}
-
 /* ── find_locked — caller must hold g_config_mutex ───────────────────────── */
 
 static struct cosmo_channel_t *channel_find_locked(uint32_t serial)
@@ -202,7 +107,6 @@ static struct cosmo_channel_t *channel_find_locked(uint32_t serial)
 
 void channel_init(void)
 {
-    memset(s_feedback_timers, 0, sizeof(s_feedback_timers));
     /* channels are already loaded by config_init() */
 }
 
@@ -211,12 +115,6 @@ esp_err_t channel_create(const char *name, const char *proto,
                           const char *mqtt_name, bool has_mqtt_name)
 {
     config_lock();
-
-    if (g_config.channels_len >= CHANNEL_MAX_COUNT) {
-        config_unlock();
-        ESP_LOGW(TAG, "channel list full");
-        return ESP_ERR_NO_MEM;
-    }
 
     /* Generate a unique serial */
     uint32_t serial;
@@ -247,10 +145,12 @@ esp_err_t channel_create(const char *name, const char *proto,
     ch->device_class          = has_device_class
                                  ? device_class
                                  : channel_device_class_t_shutter;
-    ch->counter               = 0;
-    ch->reports_tilt_support  = 0;
-    ch->force_tilt_support    = 0;
-    ch->is_state_optimistic   = 0;
+    ch->counter                = 0;
+    ch->reports_tilt_support   = 0;
+    ch->force_tilt_support     = 0;
+    ch->state_type             = channel_state_type_t_reported;
+    ch->last_command_ts        = 0;
+    ch->last_position_query_ts = 0;
 
     ch->name  = sstr(name ? name : "Unnamed");
     ch->proto = sstr((proto && strcmp(proto, "2way") == 0) ? "2way" : "1way");
@@ -304,8 +204,6 @@ esp_err_t channel_delete(uint32_t serial)
 
     config_unlock();
     config_mark_dirty();
-
-    feedback_timer_destroy(serial);
 
     ESP_LOGI(TAG, "Deleted channel serial=0x%08X", (unsigned)serial);
     broadcast_channel_deleted(serial);
@@ -411,16 +309,15 @@ esp_err_t channel_update(uint32_t serial, const struct ws_update_channel_msg_t *
 static void apply_optimistic_cmd(struct cosmo_channel_t *ch, cosmo_cmd_t cmd)
 {
     bool bidir = (bool)ch->bidirectional_feedback;
+    ch->last_command_ts = (int64_t)time(NULL);
     switch (cmd) {
     case COSMO_BTN_UP:
-        ch->state               = bidir ? channel_state_t_opening : channel_state_t_open;
-        ch->is_state_optimistic = 1;
-        if (bidir) feedback_timer_arm(ch->serial, (uint16_t)ch->feedback_timeout_s);
+        ch->state      = bidir ? channel_state_t_opening : channel_state_t_open;
+        ch->state_type = bidir ? channel_state_type_t_optimistic : channel_state_type_t_reported;
         break;
     case COSMO_BTN_DOWN:
-        ch->state               = bidir ? channel_state_t_closing : channel_state_t_closed;
-        ch->is_state_optimistic = 1;
-        if (bidir) feedback_timer_arm(ch->serial, (uint16_t)ch->feedback_timeout_s);
+        ch->state      = bidir ? channel_state_t_closing : channel_state_t_closed;
+        ch->state_type = bidir ? channel_state_type_t_optimistic : channel_state_type_t_reported;
         break;
     case COSMO_BTN_STOP:
         if (ch->state == channel_state_t_opening  ||
@@ -428,8 +325,7 @@ static void apply_optimistic_cmd(struct cosmo_channel_t *ch, cosmo_cmd_t cmd)
             ch->state == channel_state_t_in_motion) {
             ch->state = channel_state_t_partially_open;
         }
-        ch->is_state_optimistic = 1;
-        feedback_timer_cancel(ch->serial);
+        ch->state_type = bidir ? channel_state_type_t_optimistic : channel_state_type_t_reported;
         break;
     default:
         break;
@@ -459,9 +355,9 @@ static int rx_feedback_state(cosmo_cmd_t cmd, int current)
 /* Apply received-packet state update to ch (must hold config_lock). */
 static void apply_feedback_to_channel(struct cosmo_channel_t *ch, const cosmo_packet_t *pkt)
 {
-    ch->state               = rx_feedback_state(pkt->cmd, ch->state);
-    ch->is_state_optimistic = 0;
-    ch->rssi                = pkt->rssi;
+    ch->state      = rx_feedback_state(pkt->cmd, ch->state);
+    ch->state_type = channel_state_type_t_reported;
+    ch->rssi       = pkt->rssi;
     ch->last_seen_ts        = (int64_t)time(NULL);
 
     if (pkt->cmd == COSMO_BTN_FEEDBACK_PARTIAL) {
@@ -517,7 +413,6 @@ void channel_update_from_packet(const cosmo_packet_t *pkt)
     } else {
         /* Feedback from the motor (via main serial or external remote serial). */
         apply_feedback_to_channel(ch, pkt);
-        feedback_timer_cancel(ch->serial);
     }
 
     struct cosmo_channel_t copy;
@@ -591,4 +486,55 @@ esp_err_t channel_find_by_mqtt_name(const char *mqtt_name, struct cosmo_channel_
     }
     config_unlock();
     return ESP_ERR_NOT_FOUND;
+}
+
+/* ── Timeout checker (called from background worker every CHECK_INTERVAL_MS) */
+
+void channel_check_timeouts(void)
+{
+    if (!utils_time_is_valid())
+        return;
+    time_t now = time(NULL);
+
+    uint32_t serial = 0;
+
+    config_lock();
+    for (int i = 0; i < g_config.channels_len; i++) {
+        struct cosmo_channel_t *ch = &g_config.channels[i];
+        if (ch->state_type != channel_state_type_t_optimistic)
+            continue;
+        /* Timeout measured from the latest of last motor feedback or last
+         * sent command, so sending a new command postpones the window. */
+        time_t last_activity = ((time_t)ch->last_seen_ts > (time_t)ch->last_command_ts)
+                               ? (time_t)ch->last_seen_ts
+                               : (time_t)ch->last_command_ts;
+        if (last_activity <= 0)
+            continue;
+        if (now - last_activity < (time_t)ch->feedback_timeout_s)
+            continue;
+
+        if (ch->state == channel_state_t_opening  ||
+            ch->state == channel_state_t_closing  ||
+            ch->state == channel_state_t_in_motion)
+            ch->state = channel_state_t_partially_open;
+        ch->state_type = channel_state_type_t_timed_out;
+        serial = ch->serial;
+        break; /* one channel per tick */
+    }
+    config_unlock();
+
+    if (!serial)
+        return;
+
+    config_lock();
+    struct cosmo_channel_t *ch = channel_find_locked(serial);
+    if (!ch) { config_unlock(); return; }
+    struct cosmo_channel_t copy;
+    channel_deep_copy(&copy, ch);
+    config_unlock();
+
+    ESP_LOGI(TAG, "Feedback timeout serial=0x%08X, state→timed_out", (unsigned)serial);
+    broadcast_channel_update(&copy);
+    mqtt_publish_channel_update(&copy);
+    cosmo_channel_t_clear(&copy);
 }

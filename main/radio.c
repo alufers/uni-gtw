@@ -42,6 +42,7 @@ static SemaphoreHandle_t s_stop_sem         = NULL;
 static int               s_active_gdo0      = -1;
 static bool              s_initialized      = false;
 static bool              s_isr_installed    = false;
+static radio_state_t     s_radio_state      = RADIO_STATE_NOT_CONFIGURED;
 
 /* Snapshot of the config that is currently running in hardware */
 typedef struct {
@@ -239,6 +240,7 @@ static void radio_do_deinit(void)
     cc1101_deinit();
 
     s_initialized = false;
+    s_radio_state = RADIO_STATE_NOT_CONFIGURED;
     memset(&s_active_cfg, 0, sizeof(s_active_cfg));
     ESP_LOGI(TAG, "Radio deinitialized");
 }
@@ -247,6 +249,7 @@ static esp_err_t radio_do_init(const radio_hw_cfg_t *hw)
 {
     if (!hw->enabled) {
         ESP_LOGI(TAG, "Radio not enabled in config, skipping init");
+        s_radio_state = RADIO_STATE_NOT_CONFIGURED;
         return ESP_ERR_NOT_SUPPORTED;
     }
 
@@ -269,6 +272,7 @@ static esp_err_t radio_do_init(const radio_hw_cfg_t *hw)
     if (err != ESP_OK) {
         vQueueDelete(s_radio_queue);
         s_radio_queue = NULL;
+        s_radio_state = RADIO_STATE_ERROR;
         return err;
     }
 
@@ -284,11 +288,17 @@ static esp_err_t radio_do_init(const radio_hw_cfg_t *hw)
     cc1101_enter_rx();
     s_active_cfg = *hw;
     s_initialized = true;
+    s_radio_state = RADIO_STATE_OK;
     ESP_LOGI(TAG, "Radio initialised, entering RX");
     return ESP_OK;
 }
 
 /* ── Public API ──────────────────────────────────────────────────────────── */
+
+radio_state_t radio_get_state(void)
+{
+    return s_radio_state;
+}
 
 esp_err_t radio_init(void)
 {

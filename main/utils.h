@@ -3,6 +3,15 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <time.h>
+
+/* ── Time ────────────────────────────────────────────────────────────────── */
+
+/**
+ * Returns true if the system clock has been synchronised via NTP.
+ * Uses a threshold of 2020-01-01 00:00:00 UTC.
+ */
+bool utils_time_is_valid(void);
 
 /* ── Base64 ──────────────────────────────────────────────────────────────── */
 

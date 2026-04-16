@@ -28,6 +28,13 @@ esp_err_t radio_init(void);
 esp_err_t radio_apply_config(void);
 
 /**
+ * @brief Return the current radio state (NOT_CONFIGURED, ERROR, or OK).
+ *
+ * Thread-safe; may be called from any task.
+ */
+radio_state_t radio_get_state(void);
+
+/**
  * @brief Queue a packet for transmission.
  *
  * The radio task will idle the chip, transmit the packet (pkt->repeat + 1)
