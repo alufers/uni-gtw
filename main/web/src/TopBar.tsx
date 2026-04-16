@@ -1,4 +1,5 @@
-import { Clock, ClockArrowUp, Plug, Radio, Unplug, WifiZero, Server } from "lucide-preact";
+import { Clock, ClockArrowUp, LogOut, Plug, Radio, Unplug, WifiZero, Server } from "lucide-preact";
+import { Button } from "./Button";
 import { Chip, ChipButton } from "./Chip";
 import { rssiToWifiIcon } from "./icons";
 import { StatusPayload, RadioStatus, MqttStatus } from "./wsTypes";
@@ -39,6 +40,7 @@ interface TopBarProps {
   radioFlash: boolean;
   onGoToSettings: () => void;
   onOpenWifiModal: () => void;
+  onLogout?: () => void;
 }
 
 export function TopBar({
@@ -50,6 +52,7 @@ export function TopBar({
   radioFlash,
   onGoToSettings,
   onOpenWifiModal,
+  onLogout,
 }: TopBarProps) {
   const radioChip = radioStatus ? RADIO_CHIP[radioStatus] : null;
   const mqttChip = mqttStatus ? MQTT_CHIP[mqttStatus] : null;
@@ -148,6 +151,21 @@ export function TopBar({
         {connected ? <Plug size={13} class="shrink-0" /> : <Unplug size={13} class="shrink-0" />}
         {connected ? "Connected" : connecting ? "Connecting…" : "Disconnected"}
       </Chip>
+      {/* Logout */}
+      {onLogout && (
+        <>
+          <div class="w-px h-5 bg-zinc-700 shrink-0" />
+          <Button
+            variant="ghost"
+            onClick={onLogout}
+            title="Log out"
+            class="flex items-center gap-1.5"
+          >
+            <LogOut size={13} class="shrink-0" />
+            Log out
+          </Button>
+        </>
+      )}
     </div>
   );
 }

@@ -54,6 +54,12 @@ export function AuthGuard({ children }: AuthGuardProps) {
     setStatus("ready");
   };
 
+  const handleLogout = () => {
+    localStorage.removeItem(STORAGE_KEY);
+    setPassword(null);
+    setStatus("needs_password");
+  };
+
   if (status === "checking") {
     return (
       <div class="flex items-center justify-center h-screen bg-zinc-950 text-zinc-500 text-sm font-mono">
@@ -66,5 +72,9 @@ export function AuthGuard({ children }: AuthGuardProps) {
     return <PasswordModal onSuccess={handlePasswordSuccess} />;
   }
 
-  return <AuthContext.Provider value={{ password, language }}>{children}</AuthContext.Provider>;
+  return (
+    <AuthContext.Provider value={{ password, language, onLogout: handleLogout }}>
+      {children}
+    </AuthContext.Provider>
+  );
 }

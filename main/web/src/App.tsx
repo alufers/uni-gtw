@@ -33,7 +33,7 @@ export function App() {
 }
 
 function AppInner() {
-  const { password } = useContext(AuthContext);
+  const { password, onLogout } = useContext(AuthContext);
   const [lines, setLines] = useState<string[]>([]);
   const [channels, setChannels] = useState<Channel[]>([]);
   const [status, setStatus] = useState<StatusPayload | null>(null);
@@ -145,6 +145,7 @@ function AppInner() {
         radioFlash={radioFlash}
         onGoToSettings={goToSettings}
         onOpenWifiModal={() => setShowWifiModal(true)}
+        onLogout={password !== null ? onLogout : undefined}
       />
 
       {/* Tab bar with console toggle on the right */}
