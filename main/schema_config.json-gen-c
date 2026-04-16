@@ -35,6 +35,11 @@ enum channel_cmd_name_t {
     TILT_DECREASE
 }
 
+enum language_t {
+    en,
+    pl
+}
+
 enum wifi_mode_t {
     ap,
     sta
@@ -71,6 +76,13 @@ enum channel_device_class_t {
     light,
     switch,
     hidden
+}
+
+// Response struct for GET /api/info (unauthenticated)
+struct web_info_t {
+    bool web_password_enabled;
+    sstr_t language;
+    nullable bool web_password_valid;  // present only when X-Auth header was supplied
 }
 
 // ── Config sub-structs ────────────────────────────────────────────────────────
@@ -125,5 +137,8 @@ struct gateway_config_t {
     radio_config_t radio;
     int position_status_query_interval_s;
     int gpio_status_led;
+    bool web_password_enabled;
+    sstr_t web_password;   // PBKDF2 hash: base64(16-byte salt) + "$" + base64(32-byte output)
+    language_t language;
     cosmo_channel_t channels[];
 }

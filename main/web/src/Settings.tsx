@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "preact/hooks";
+import { useContext, useEffect, useRef, useState } from "preact/hooks";
+import { AuthContext } from "./AuthContext";
 import { Button } from "./Button";
 import { Modal } from "./Modal";
 
@@ -29,6 +30,9 @@ export interface SettingsData {
   radio: RadioConfig;
   position_status_query_interval_s: number;
   gpio_status_led: number;
+  web_password_enabled: boolean;
+  web_password: string;
+  language: "en" | "pl";
 }
 
 type SaveStatus = "idle" | "loading" | "saving" | "saved" | "rebooting" | "error";
@@ -94,6 +98,7 @@ function GpioInput({
 }
 
 export function Settings() {
+  const { password } = useContext(AuthContext);
   const [draft, setDraft] = useState<SettingsData | null>(null);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("loading");
   const radioSectionRef = useRef<HTMLElement>(null);
@@ -102,17 +107,25 @@ export function Settings() {
   const [restoreFileContent, setRestoreFileContent] = useState<string | null>(null);
   const [restoreFileName, setRestoreFileName] = useState<string>("");
 
+  const authHeaders: Record<string, string> = password ? { "X-Auth": password } : {};
+
   useEffect(() => {
-    fetch("/api/settings")
+    fetch("/api/settings", { headers: authHeaders })
       .then((r) => {
         if (!r.ok) throw new Error("HTTP " + r.status);
         return r.json() as Promise<SettingsData>;
       })
       .then((data) => {
+        // Password hash is not returned by GET /api/settings.
+        // Pre-fill with the sentinel so the firmware preserves the existing hash on save.
+        if (data.web_password_enabled && !data.web_password) {
+          data.web_password = "***UNCHANGED***";
+        }
         setDraft(data);
         setSaveStatus("idle");
       })
       .catch(() => setSaveStatus("error"));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   /** Scroll the radio section into view — called from external button. */
@@ -136,7 +149,7 @@ export function Settings() {
     const hostname = draft?.hostname ?? "uni-gtw";
     const filename = `${hostname}-backup-${dateStr}-${timeStr}.json`;
 
-    fetch("/api/backup")
+    fetch("/api/backup", { headers: authHeaders })
       .then((r) => {
         if (!r.ok) throw new Error("HTTP " + r.status);
         return r.blob();
@@ -172,7 +185,7 @@ export function Settings() {
     setSaveStatus("saving");
     fetch("/api/restore", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...authHeaders },
       body: restoreFileContent,
     })
       .then((r) => {
@@ -194,7 +207,7 @@ export function Settings() {
     setSaveStatus("saving");
     fetch("/api/settings", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...authHeaders },
       body: JSON.stringify(draft),
     })
       .then((r) => {
@@ -202,6 +215,9 @@ export function Settings() {
         return r.json() as Promise<SettingsData>;
       })
       .then((data) => {
+        if (data.web_password_enabled && !data.web_password) {
+          data.web_password = "***UNCHANGED***";
+        }
         setDraft(data);
         setSaveStatus("saved");
         setTimeout(() => setSaveStatus("idle"), 2500);
@@ -479,6 +495,69 @@ export function Settings() {
               />
               {draft.gpio_status_led < 0 && <span class="text-zinc-500 text-xs">disabled</span>}
             </div>
+          </section>
+
+          {/* ── Security ────────────────────────────────────────────────── */}
+          <section class="mb-6">
+            <h3 class="text-xs font-semibold text-zinc-400 mb-3 uppercase tracking-wide">
+              Security
+            </h3>
+            <label class="flex items-center gap-2 mb-4 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={draft.web_password_enabled}
+                onChange={(e) => {
+                  const enabled = (e.target as HTMLInputElement).checked;
+                  setDraft({
+                    ...draft,
+                    web_password_enabled: enabled,
+                    web_password: enabled ? "***UNCHANGED***" : "",
+                  });
+                }}
+                class="w-4 h-4 accent-blue-500"
+              />
+              <span class="text-xs text-zinc-300">Enable web UI password</span>
+            </label>
+            {draft.web_password_enabled && (
+              <div>
+                <label class="block mb-1 text-xs text-zinc-400">Password</label>
+                <input
+                  type="password"
+                  value={draft.web_password}
+                  onInput={(e) =>
+                    setDraft({
+                      ...draft,
+                      web_password: (e.target as HTMLInputElement).value,
+                    })
+                  }
+                  class="w-full bg-zinc-800 text-zinc-100 border border-zinc-600 rounded px-2 py-1 text-xs font-mono mb-1"
+                />
+                <p class="text-zinc-600 text-xs">
+                  Leave unchanged to keep the current password. Clear and type a new value to change
+                  it.
+                </p>
+              </div>
+            )}
+          </section>
+
+          {/* ── Language ─────────────────────────────────────────────────── */}
+          <section class="mb-6">
+            <h3 class="text-xs font-semibold text-zinc-400 mb-3 uppercase tracking-wide">
+              Language
+            </h3>
+            <select
+              value={draft.language}
+              onChange={(e) =>
+                setDraft({
+                  ...draft,
+                  language: (e.target as HTMLSelectElement).value as "en" | "pl",
+                })
+              }
+              class="bg-zinc-800 text-zinc-100 border border-zinc-600 rounded px-2 py-1 text-xs font-mono"
+            >
+              <option value="en">English</option>
+              <option value="pl">Polski</option>
+            </select>
           </section>
 
           {/* ── Save ─────────────────────────────────────────────────────── */}

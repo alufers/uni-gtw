@@ -4,6 +4,7 @@
 #include "config.h"
 #include "mqtt.h"
 #include "status_led.h"
+#include "utils.h"
 #include "wifi_manager.h"
 
 #include <string.h>
@@ -43,6 +44,34 @@ static SemaphoreHandle_t s_ws_mutex;
 static char  s_history[HISTORY_BUF_SIZE];
 static int   s_history_write = 0;
 static bool  s_history_full  = false;
+
+/* ── Auth ────────────────────────────────────────────────────────────────── */
+
+static bool check_auth(httpd_req_t *req)
+{
+    config_lock();
+    bool enabled = g_config.web_password_enabled;
+    config_unlock();
+    if (!enabled) return true;
+
+    char pw[128] = {0};
+    if (httpd_req_get_hdr_value_str(req, "X-Auth", pw, sizeof(pw)) != ESP_OK)
+        return false;
+
+    config_lock();
+    bool ok = utils_crypto_verify_password(pw, sstr_cstr(g_config.web_password));
+    config_unlock();
+    return ok;
+}
+
+#define REQUIRE_AUTH(req)                                                     \
+    do {                                                                      \
+        if (!check_auth(req)) {                                               \
+            httpd_resp_set_hdr(req, "WWW-Authenticate", "X-Auth");            \
+            httpd_resp_send_err(req, HTTPD_401_UNAUTHORIZED, "Unauthorized"); \
+            return ESP_OK;                                                    \
+        }                                                                     \
+    } while (0)
 
 /* ── Embedded file handlers ──────────────────────────────────────────────── */
 
@@ -411,6 +440,26 @@ static void ws_dispatch(int fd, const char *text)
 static esp_err_t ws_handler(httpd_req_t *req)
 {
     if (req->method == HTTP_GET) {
+        /* Auth check: read ?auth=<password> from the upgrade URL */
+        config_lock();
+        bool pw_enabled = g_config.web_password_enabled;
+        config_unlock();
+        if (pw_enabled) {
+            char query[256] = {0};
+            char auth_buf[128] = {0};
+            httpd_req_get_url_query_str(req, query, sizeof(query));
+            httpd_query_key_value(query, "auth", auth_buf, sizeof(auth_buf));
+            config_lock();
+            bool ok = utils_crypto_verify_password(auth_buf,
+                                                   sstr_cstr(g_config.web_password));
+            config_unlock();
+            if (!ok) {
+                httpd_resp_set_hdr(req, "WWW-Authenticate", "X-Auth");
+                httpd_resp_send_err(req, HTTPD_401_UNAUTHORIZED, "Unauthorized");
+                return ESP_OK;
+            }
+        }
+
         int fd = httpd_req_to_sockfd(req);
 
         xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
@@ -508,36 +557,13 @@ void gtw_console_log(const char *fmt, ...)
 
 /* ── Packet broadcast ────────────────────────────────────────────────────── */
 
-/* Minimal base64 encoder (no external deps). */
-static void base64_encode_bytes(const uint8_t *src, size_t len, char *dst)
-{
-    static const char tbl[] =
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    size_t out = 0;
-    size_t i = 0;
-    while (i < len) {
-        uint32_t a = i < len ? src[i++] : 0;
-        uint32_t b = i < len ? src[i++] : 0;
-        uint32_t c = i < len ? src[i++] : 0;
-        uint32_t t = (a << 16) | (b << 8) | c;
-        dst[out++] = tbl[(t >> 18) & 0x3F];
-        dst[out++] = tbl[(t >> 12) & 0x3F];
-        dst[out++] = tbl[(t >>  6) & 0x3F];
-        dst[out++] = tbl[(t >>  0) & 0x3F];
-    }
-    size_t mod = len % 3;
-    if (mod == 1) { dst[out - 2] = '='; dst[out - 1] = '='; }
-    else if (mod == 2) { dst[out - 1] = '='; }
-    dst[out] = '\0';
-}
-
 void webserver_ws_broadcast_packet(bool is_tx,
                                    const uint8_t *raw_bytes, int raw_len,
                                    bool valid, const cosmo_packet_t *pkt)
 {
     /* base64-encode the raw bytes (9 bytes → 12 base64 chars + NUL) */
     char b64[((COSMO_RAW_PACKET_LEN + 2) / 3) * 4 + 1];
-    base64_encode_bytes(raw_bytes, (size_t)raw_len, b64);
+    utils_base64_encode(raw_bytes, (size_t)raw_len, b64);
 
     struct ws_server_message_t msg;
     ws_server_message_t_init(&msg);
@@ -572,36 +598,30 @@ void webserver_ws_broadcast_packet(bool is_tx,
 
 /* ── Settings REST handlers ──────────────────────────────────────────────── */
 
-/* Serialise the current config (excluding channels) and send it.
- * For GET /api/settings. Channels are not included in the settings view. */
+/* Serialise the current config (excluding channels and password hash) and send it.
+ * For GET /api/settings. Channels and web_password are not included. */
 static esp_err_t send_settings_json(httpd_req_t *req)
 {
-    /* Build field mask: all fields except channels */
-    uint64_t mask[gateway_config_t_FIELD_MASK_WORD_COUNT] = {0};
-    JSON_GEN_C_FIELD_MASK_SET(mask, gateway_config_t_FIELD_version);
-    JSON_GEN_C_FIELD_MASK_SET(mask, gateway_config_t_FIELD_hostname);
-    JSON_GEN_C_FIELD_MASK_SET(mask, gateway_config_t_FIELD_mqtt);
-    JSON_GEN_C_FIELD_MASK_SET(mask, gateway_config_t_FIELD_radio);
-    JSON_GEN_C_FIELD_MASK_SET(mask, gateway_config_t_FIELD_position_status_query_interval_s);
-    JSON_GEN_C_FIELD_MASK_SET(mask, gateway_config_t_FIELD_gpio_status_led);
-
-    /* Marshal a temporary subset by marshaling the full object then filtering.
-     * json-gen-c doesn't have a selected-marshal, so marshal the full object. */
+    /* Temporarily clear web_password so it is not serialised.
+     * The full hash is only included in backup (backup_get_handler). */
     config_lock();
-    sstr_t json = sstr_new();
+    sstr_t saved_pw        = g_config.web_password;
+    g_config.web_password  = sstr("");
+    sstr_t json            = sstr_new();
     json_marshal_gateway_config_t(&g_config, json);
+    sstr_free(g_config.web_password);
+    g_config.web_password  = saved_pw;
     config_unlock();
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, sstr_cstr(json), (ssize_t)sstr_length(json));
     sstr_free(json);
-
-    (void)mask; /* mask reserved for future selective marshal */
     return ESP_OK;
 }
 
 static esp_err_t settings_get_handler(httpd_req_t *req)
 {
+    REQUIRE_AUTH(req);
     return send_settings_json(req);
 }
 
@@ -615,6 +635,14 @@ static void apply_settings_from_buf(const char *buf, int len)
     JSON_GEN_C_FIELD_MASK_SET(mask, gateway_config_t_FIELD_radio);
     JSON_GEN_C_FIELD_MASK_SET(mask, gateway_config_t_FIELD_position_status_query_interval_s);
     JSON_GEN_C_FIELD_MASK_SET(mask, gateway_config_t_FIELD_gpio_status_led);
+    JSON_GEN_C_FIELD_MASK_SET(mask, gateway_config_t_FIELD_web_password_enabled);
+    JSON_GEN_C_FIELD_MASK_SET(mask, gateway_config_t_FIELD_web_password);
+    JSON_GEN_C_FIELD_MASK_SET(mask, gateway_config_t_FIELD_language);
+
+    /* Save previous password before unmarshal overwrites it */
+    config_lock();
+    sstr_t prev_pw = sstr_dup(g_config.web_password);
+    config_unlock();
 
     sstr_t in = sstr_of(buf, (size_t)len);
 
@@ -624,6 +652,31 @@ static void apply_settings_from_buf(const char *buf, int len)
     config_unlock();
 
     sstr_free(in);
+
+    /* Handle password: hash a new value, or restore if sentinel / empty */
+    config_lock();
+    const char *new_pw_str = sstr_cstr(g_config.web_password);
+    if (strcmp(new_pw_str, "***UNCHANGED***") == 0 || strlen(new_pw_str) == 0) {
+        /* Client sent sentinel or empty — keep previous hash */
+        sstr_free(g_config.web_password);
+        g_config.web_password = prev_pw;
+        prev_pw = NULL;
+    } else {
+        /* New plaintext password — hash it */
+        char hashed[80]; /* SALT_B64_LEN(24) + "$" + HASH_B64_LEN(44) + NUL = 70 bytes */
+        bool ok = utils_crypto_hash_password(new_pw_str, hashed, sizeof(hashed));
+        sstr_free(g_config.web_password); /* free the plaintext from unmarshal */
+        if (ok) {
+            g_config.web_password = sstr(hashed);
+            sstr_free(prev_pw);
+        } else {
+            ESP_LOGW(TAG, "Password hashing failed, keeping previous");
+            g_config.web_password = prev_pw;
+        }
+        prev_pw = NULL;
+    }
+    config_unlock();
+
     config_mark_dirty();
 
     /* Apply hostname to mDNS and netif */
@@ -656,6 +709,7 @@ static void apply_settings_from_buf(const char *buf, int len)
 
 static esp_err_t settings_post_handler(httpd_req_t *req)
 {
+    REQUIRE_AUTH(req);
     if (req->content_len <= 0 || req->content_len > 4096) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid body");
         return ESP_OK;
@@ -680,6 +734,7 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
 
 static esp_err_t backup_get_handler(httpd_req_t *req)
 {
+    REQUIRE_AUTH(req);
     /* Backup includes the full config with channels */
     config_lock();
     sstr_t json = sstr_new();
@@ -702,6 +757,7 @@ static void reboot_task(void *arg)
 
 static esp_err_t restore_post_handler(httpd_req_t *req)
 {
+    REQUIRE_AUTH(req);
     if (req->content_len <= 0 || req->content_len > 32768) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid body");
         return ESP_OK;
@@ -738,6 +794,45 @@ static esp_err_t restore_post_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* ── /api/info (unauthenticated) ─────────────────────────────────────────── */
+
+static const char *language_to_str(int lang)
+{
+    switch (lang) {
+    case language_t_pl: return "pl";
+    default:            return "en";
+    }
+}
+
+static esp_err_t info_get_handler(httpd_req_t *req)
+{
+    struct web_info_t info;
+    web_info_t_init(&info);
+
+    char pw[128] = {0};
+    bool has_header =
+        httpd_req_get_hdr_value_str(req, "X-Auth", pw, sizeof(pw)) == ESP_OK;
+
+    config_lock();
+    info.web_password_enabled = g_config.web_password_enabled;
+    info.language = sstr(language_to_str(g_config.language));
+    if (has_header) {
+        info.has_web_password_valid = 1;
+        info.web_password_valid =
+            utils_crypto_verify_password(pw, sstr_cstr(g_config.web_password));
+    }
+    config_unlock();
+
+    sstr_t json = sstr_new();
+    json_marshal_web_info_t(&info, json);
+    web_info_t_clear(&info);
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, sstr_cstr(json), (ssize_t)sstr_length(json));
+    sstr_free(json);
+    return ESP_OK;
+}
+
 /* ── Early init ──────────────────────────────────────────────────────────── */
 
 void webserver_early_init(void)
@@ -755,7 +850,7 @@ void webserver_start(void)
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.lru_purge_enable  = true;
-    config.max_uri_handlers  = 12;
+    config.max_uri_handlers  = 14;
     config.stack_size        = 6500;
 
     ESP_LOGI(TAG, "Starting HTTP server on port %d", config.server_port);
@@ -792,12 +887,18 @@ void webserver_start(void)
     static const httpd_uri_t uri_restore_post = {
         .uri    = "/api/restore",
         .method = HTTP_POST,
+
         .handler = restore_post_handler,
     };
     static const httpd_uri_t uri_backup_get = {
         .uri    = "/api/backup",
         .method = HTTP_GET,
         .handler = backup_get_handler,
+    };
+    static const httpd_uri_t uri_info_get = {
+        .uri    = "/api/info",
+        .method = HTTP_GET,
+        .handler = info_get_handler,
     };
 
     httpd_register_uri_handler(s_server, &uri_root);
@@ -808,6 +909,7 @@ void webserver_start(void)
     httpd_register_uri_handler(s_server, &uri_settings_post);
     httpd_register_uri_handler(s_server, &uri_restore_post);
     httpd_register_uri_handler(s_server, &uri_backup_get);
+    httpd_register_uri_handler(s_server, &uri_info_get);
 
     ESP_LOGI(TAG, "HTTP server started");
 }

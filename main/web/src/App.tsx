@@ -1,5 +1,7 @@
-import { useEffect, useRef, useState } from "preact/hooks";
+import { useContext, useEffect, useRef, useState } from "preact/hooks";
 import { Terminal } from "lucide-preact";
+import { AuthContext } from "./AuthContext";
+import { AuthGuard } from "./AuthGuard";
 import { Console } from "./Console";
 import { Channels } from "./Channels";
 import { Channel } from "./channelTypes";
@@ -23,6 +25,15 @@ const TABS = [
 ];
 
 export function App() {
+  return (
+    <AuthGuard>
+      <AppInner />
+    </AuthGuard>
+  );
+}
+
+function AppInner() {
+  const { password } = useContext(AuthContext);
   const [lines, setLines] = useState<string[]>([]);
   const [channels, setChannels] = useState<Channel[]>([]);
   const [status, setStatus] = useState<StatusPayload | null>(null);
@@ -36,8 +47,11 @@ export function App() {
   const lastStatusTimeRef = useRef<number>(0);
   const radioFlashTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  const wsUrl = password
+    ? `ws://${location.host}/ws?auth=${encodeURIComponent(password)}`
+    : `ws://${location.host}/ws`;
   const { lastJsonMessage, sendJsonMessage, readyState, forceReconnect } =
-    useJsonWebsocket<WsMessage>(`ws://${location.host}/ws`);
+    useJsonWebsocket<WsMessage>(wsUrl);
 
   useEffect(() => {
     if (!lastJsonMessage) return;

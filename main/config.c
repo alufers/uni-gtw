@@ -109,6 +109,10 @@ void config_init(void)
     g_config.position_status_query_interval_s = 60;
     g_config.gpio_status_led                 = -1;
 
+    g_config.language             = language_t_en;
+    g_config.web_password_enabled = 0;
+    g_config.web_password         = sstr("");
+
     /* String defaults — sstr() allocates a new sstr_t from a C string literal. */
     g_config.mqtt.ha_prefix   = sstr("homeassistant");
     g_config.mqtt.mqtt_prefix = sstr("unigtw");

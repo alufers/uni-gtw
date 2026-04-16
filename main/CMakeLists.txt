@@ -32,6 +32,7 @@ idf_component_register(
         "background_worker.c"
         "mqtt.c"
         "status_led.c"
+        "utils.c"
     INCLUDE_DIRS "."
     REQUIRES
         esp_wifi
@@ -49,6 +50,7 @@ idf_component_register(
         lwip
         mdns
         mqtt
+        mbedtls
     EMBED_FILES
         ${WEB_DIST_DIR}/index.html
         ${WEB_DIST_DIR}/app.js

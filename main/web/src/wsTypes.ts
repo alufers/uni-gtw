@@ -1,5 +1,11 @@
 import { Channel } from "./channelTypes";
 
+export interface InfoResponse {
+  web_password_enabled: boolean;
+  language: string;
+  web_password_valid?: boolean | null;
+}
+
 export type RadioStatus = "ok" | "error" | "not_configured";
 export type MqttStatus = "unconfigured" | "connecting" | "connected" | "disconnected";
 
