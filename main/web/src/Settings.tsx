@@ -1,13 +1,14 @@
 import { useContext, useEffect, useRef, useState } from "preact/hooks";
+import { Cpu, Globe, Lightbulb, Monitor, Radio, Server, SlidersHorizontal } from "lucide-preact";
 import { AuthContext } from "./AuthContext";
-import { Button } from "./ui/Button";
-import { Modal } from "./ui/Modal";
 import { Alert } from "./ui/Alert";
+import { Button } from "./ui/Button";
+import { Collapsible } from "./ui/Collapsible";
+import { Modal } from "./ui/Modal";
 
 interface MqttConfig {
   enabled: boolean;
-  broker: string;
-  port: number;
+  url: string;
   username: string;
   password: string;
   ha_discovery_enabled: boolean;
@@ -38,7 +39,7 @@ export interface SettingsData {
 
 type SaveStatus = "idle" | "loading" | "saving" | "saved" | "rebooting" | "error";
 
-/** Returns a list of GPIO field pairs that share the same pin number. */
+/** Returns the set of GPIO fields that share the same pin number. */
 function findGpioDuplicates(radio: RadioConfig): Set<keyof RadioConfig> {
   const fields: (keyof RadioConfig)[] = [
     "gpio_miso",
@@ -69,6 +70,16 @@ const GPIO_FIELDS: { key: keyof RadioConfig; label: string }[] = [
   { key: "gpio_gdo0", label: "GDO0" },
 ];
 
+/* ── Shared primitive components ────────────────────────────────────────────── */
+
+function FieldLabel({ children }: { children: preact.ComponentChildren }) {
+  return <label class="block mb-1 text-xs text-zinc-400">{children}</label>;
+}
+
+function Hint({ children }: { children: preact.ComponentChildren }) {
+  return <p class="text-zinc-600 text-xs mt-1">{children}</p>;
+}
+
 function GpioInput({
   label,
   value,
@@ -81,7 +92,7 @@ function GpioInput({
   onChange: (v: number) => void;
 }) {
   return (
-    <div class="flex items-center gap-2 mb-2">
+    <div class="flex items-center gap-2">
       <label class="w-14 shrink-0 text-xs text-zinc-400 text-right">{label}</label>
       <input
         type="number"
@@ -98,11 +109,59 @@ function GpioInput({
   );
 }
 
+/* ── Section card wrapper ────────────────────────────────────────────────────── */
+
+function SectionCard({
+  icon: Icon,
+  title,
+  children,
+}: {
+  icon: typeof Monitor;
+  title: string;
+  children: preact.ComponentChildren;
+}) {
+  return (
+    <div class="bg-zinc-900 border border-zinc-800 rounded-lg mb-4 overflow-hidden">
+      <div class="flex items-center gap-2.5 px-4 py-3 border-b border-zinc-800">
+        <Icon size={15} class="text-zinc-400 shrink-0" />
+        <span class="text-sm font-semibold text-zinc-200">{title}</span>
+      </div>
+      <div class="p-4 flex flex-col gap-5">{children}</div>
+    </div>
+  );
+}
+
+/* ── Subsection heading ──────────────────────────────────────────────────────── */
+
+function SubSection({
+  icon: Icon,
+  title,
+  children,
+  divided = true,
+}: {
+  icon?: typeof Server;
+  title: string;
+  children: preact.ComponentChildren;
+  divided?: boolean;
+}) {
+  return (
+    <div class={divided ? "border-t border-zinc-800 pt-4 -mt-1" : ""}>
+      <h3 class="flex items-center gap-1.5 text-xs font-semibold text-zinc-400 uppercase tracking-wide mb-3">
+        {Icon && <Icon size={12} class="shrink-0" />}
+        {title}
+      </h3>
+      {children}
+    </div>
+  );
+}
+
+/* ── Main component ──────────────────────────────────────────────────────────── */
+
 export function Settings() {
   const { password } = useContext(AuthContext);
   const [draft, setDraft] = useState<SettingsData | null>(null);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("loading");
-  const radioSectionRef = useRef<HTMLElement>(null);
+  const radioSectionRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [showRestoreConfirm, setShowRestoreConfirm] = useState(false);
   const [restoreFileContent, setRestoreFileContent] = useState<string | null>(null);
@@ -117,8 +176,6 @@ export function Settings() {
         return r.json() as Promise<SettingsData>;
       })
       .then((data) => {
-        // Password hash is not returned by GET /api/settings.
-        // Pre-fill with the sentinel so the firmware preserves the existing hash on save.
         if (data.web_password_enabled && !data.web_password) {
           data.web_password = "***UNCHANGED***";
         }
@@ -129,16 +186,9 @@ export function Settings() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /** Scroll the radio section into view — called from external button. */
-  const scrollToRadio = () => {
-    radioSectionRef.current?.scrollIntoView({
-      behavior: "smooth",
-      block: "start",
-    });
-  };
-  // Expose via a custom event so App.tsx can trigger it without prop drilling.
   useEffect(() => {
-    const handler = () => scrollToRadio();
+    const handler = () =>
+      radioSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
     window.addEventListener("settings:scroll-radio", handler);
     return () => window.removeEventListener("settings:scroll-radio", handler);
   }, []);
@@ -148,8 +198,6 @@ export function Settings() {
     const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
     const timeStr = `${String(now.getHours()).padStart(2, "0")}${String(now.getMinutes()).padStart(2, "0")}`;
     const hostname = draft?.hostname ?? "uni-gtw";
-    const filename = `${hostname}-backup-${dateStr}-${timeStr}.json`;
-
     fetch("/api/backup", { headers: authHeaders })
       .then((r) => {
         if (!r.ok) throw new Error("HTTP " + r.status);
@@ -159,7 +207,7 @@ export function Settings() {
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
-        a.download = filename;
+        a.download = `${hostname}-backup-${dateStr}-${timeStr}.json`;
         a.click();
         URL.revokeObjectURL(url);
       })
@@ -176,7 +224,6 @@ export function Settings() {
       setShowRestoreConfirm(true);
     });
     reader.readAsText(file);
-    /* Reset so the same file can be selected again if needed */
     (e.target as HTMLInputElement).value = "";
   };
 
@@ -191,7 +238,6 @@ export function Settings() {
     })
       .then((r) => {
         if (!r.ok) throw new Error("HTTP " + r.status);
-        /* Device will reboot — auto-reconnect handles re-connecting */
         setSaveStatus("rebooting");
       })
       .catch(() => setSaveStatus("error"))
@@ -203,8 +249,7 @@ export function Settings() {
 
   const save = () => {
     if (!draft) return;
-    const dupes = findGpioDuplicates(draft.radio);
-    if (dupes.size > 0) return; // block save on validation errors
+    if (findGpioDuplicates(draft.radio).size > 0) return;
     setSaveStatus("saving");
     fetch("/api/settings", {
       method: "POST",
@@ -253,316 +298,307 @@ export function Settings() {
     <>
       <div class="p-4 overflow-y-auto h-full">
         <div class="max-w-lg mx-auto">
-          {/* ── Network ──────────────────────────────────────────────────── */}
-          <section class="mb-6">
-            <h3 class="text-xs font-semibold text-zinc-400 mb-3 uppercase tracking-wide">
-              Network
-            </h3>
-            <label class="block mb-1 text-xs text-zinc-400">Hostname</label>
-            <input
-              type="text"
-              value={draft.hostname}
-              maxLength={63}
-              onInput={(e) =>
-                setDraft({
-                  ...draft,
-                  hostname: (e.target as HTMLInputElement).value,
-                })
-              }
-              class="w-full bg-zinc-800 text-zinc-100 border border-zinc-600 rounded px-2 py-1 text-xs font-mono mb-1"
-            />
-            <p class="text-zinc-600 text-xs">
-              Reachable via mDNS as{" "}
-              <span class="text-zinc-400 font-mono">{draft.hostname}.local</span>
-            </p>
-          </section>
-
-          {/* ── Radio / CC1101 ────────────────────────────────────────────── */}
-          <section class="mb-6" ref={radioSectionRef}>
-            <h3 class="text-xs font-semibold text-zinc-400 mb-3 uppercase tracking-wide">
-              Radio (CC1101)
-            </h3>
-
-            <label class="flex items-center gap-2 mb-4 cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={draft.radio.enabled}
-                onChange={(e) => updateRadio("enabled", (e.target as HTMLInputElement).checked)}
-                class="w-4 h-4 accent-blue-500"
-              />
-              <span class="text-xs text-zinc-300">Enable radio</span>
-            </label>
-
-            {radioDisabled && (
-              <Alert class="mb-4">
-                Radio is disabled. The gateway will not be able to control or receive status from
-                blinds until the radio is enabled and saved.
-              </Alert>
-            )}
-
-            <p class="text-zinc-500 text-xs mb-3">
-              GPIO pin numbers for the CC1101 SPI connection.
-            </p>
-
-            <div class={radioDisabled ? "opacity-40 pointer-events-none" : ""}>
-              {GPIO_FIELDS.map(({ key, label }) => (
-                <GpioInput
-                  key={key}
-                  label={label}
-                  value={draft.radio[key] as number}
-                  error={gpioDupes.has(key)}
-                  onChange={(v) => updateRadio(key, v)}
-                />
-              ))}
-
-              {gpioDupes.size > 0 && (
-                <p class="text-red-400 text-xs mb-3">
-                  Each GPIO pin must be assigned to exactly one signal.
-                </p>
-              )}
-
-              <div class="flex items-center gap-2 mt-3">
-                <label class="text-xs text-zinc-400 shrink-0">SPI clock</label>
-                <input
-                  type="number"
-                  value={draft.radio.spi_freq_hz}
-                  min={100000}
-                  max={10000000}
-                  step={100000}
-                  onInput={(e) =>
-                    updateRadio(
-                      "spi_freq_hz",
-                      Math.max(100000, parseInt((e.target as HTMLInputElement).value) || 500000),
-                    )
-                  }
-                  class="w-32 bg-zinc-800 text-zinc-100 border border-zinc-600 rounded px-2 py-1 text-xs font-mono"
-                />
-                <span class="text-zinc-500 text-xs">Hz</span>
-              </div>
-            </div>
-          </section>
-
-          {/* ── MQTT ─────────────────────────────────────────────────────── */}
-          <section class="mb-6">
-            <h3 class="text-xs font-semibold text-zinc-400 mb-3 uppercase tracking-wide">MQTT</h3>
-
-            <label class="flex items-center gap-2 mb-4 cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={draft.mqtt.enabled}
-                onChange={(e) => updateMqtt("enabled", (e.target as HTMLInputElement).checked)}
-                class="w-4 h-4 accent-blue-500"
-              />
-              <span class="text-xs text-zinc-300">Enable MQTT</span>
-            </label>
-
-            <div class={mqttDisabled ? "opacity-40 pointer-events-none" : ""}>
-              <label class="block mb-1 text-xs text-zinc-400">Broker host</label>
-              <input
-                type="text"
-                value={draft.mqtt.broker}
-                placeholder="192.168.1.100 or mqtt.example.com"
-                onInput={(e) => updateMqtt("broker", (e.target as HTMLInputElement).value)}
-                class="w-full bg-zinc-800 text-zinc-100 border border-zinc-600 rounded px-2 py-1 text-xs font-mono mb-3"
-              />
-
-              <label class="block mb-1 text-xs text-zinc-400">Port</label>
-              <input
-                type="number"
-                value={draft.mqtt.port}
-                min={1}
-                max={65535}
-                onInput={(e) =>
-                  updateMqtt(
-                    "port",
-                    Math.min(
-                      65535,
-                      Math.max(1, parseInt((e.target as HTMLInputElement).value) || 1883),
-                    ),
-                  )
+          {/* ── UI ──────────────────────────────────────────────────────── */}
+          <SectionCard icon={Monitor} title="UI">
+            {/* Language */}
+            <div>
+              <FieldLabel>Language</FieldLabel>
+              <select
+                value={draft.language}
+                onChange={(e) =>
+                  setDraft({
+                    ...draft,
+                    language: (e.target as HTMLSelectElement).value as "en" | "pl",
+                  })
                 }
-                class="w-32 bg-zinc-800 text-zinc-100 border border-zinc-600 rounded px-2 py-1 text-xs font-mono mb-3"
-              />
+                class="bg-zinc-800 text-zinc-100 border border-zinc-600 rounded px-2 py-1 text-xs font-mono"
+              >
+                <option value="en">English</option>
+                <option value="pl">Polski</option>
+              </select>
+            </div>
 
-              <label class="block mb-1 text-xs text-zinc-400">Username</label>
-              <input
-                type="text"
-                value={draft.mqtt.username}
-                onInput={(e) => updateMqtt("username", (e.target as HTMLInputElement).value)}
-                class="w-full bg-zinc-800 text-zinc-100 border border-zinc-600 rounded px-2 py-1 text-xs font-mono mb-3"
-              />
-
-              <label class="block mb-1 text-xs text-zinc-400">Password</label>
-              <input
-                type="password"
-                value={draft.mqtt.password}
-                onInput={(e) => updateMqtt("password", (e.target as HTMLInputElement).value)}
-                class="w-full bg-zinc-800 text-zinc-100 border border-zinc-600 rounded px-2 py-1 text-xs font-mono mb-3"
-              />
-
-              <label class="block mb-1 text-xs text-zinc-400">MQTT prefix</label>
-              <input
-                type="text"
-                value={draft.mqtt.mqtt_prefix}
-                placeholder="unigtw"
-                onInput={(e) => updateMqtt("mqtt_prefix", (e.target as HTMLInputElement).value)}
-                class="w-full bg-zinc-800 text-zinc-100 border border-zinc-600 rounded px-2 py-1 text-xs font-mono mb-3"
-              />
-
-              <label class="flex items-center gap-2 mb-3 cursor-pointer select-none">
+            {/* Security */}
+            <SubSection title="Password">
+              <label class="flex items-center gap-2 cursor-pointer select-none">
                 <input
                   type="checkbox"
-                  checked={draft.mqtt.ha_discovery_enabled}
-                  onChange={(e) =>
-                    updateMqtt("ha_discovery_enabled", (e.target as HTMLInputElement).checked)
-                  }
+                  checked={draft.web_password_enabled}
+                  onChange={(e) => {
+                    const enabled = (e.target as HTMLInputElement).checked;
+                    setDraft({
+                      ...draft,
+                      web_password_enabled: enabled,
+                      web_password: enabled ? "***UNCHANGED***" : "",
+                    });
+                  }}
                   class="w-4 h-4 accent-blue-500"
                 />
-                <span class="text-xs text-zinc-300">Enable Home Assistant discovery</span>
+                <span class="text-xs text-zinc-300">Enable web UI password</span>
               </label>
-
-              {draft.mqtt.ha_discovery_enabled && (
-                <>
-                  <label class="block mb-1 text-xs text-zinc-400">HA discovery prefix</label>
+              {draft.web_password_enabled && (
+                <div class="mt-3">
+                  <FieldLabel>Password</FieldLabel>
                   <input
-                    type="text"
-                    value={draft.mqtt.ha_prefix}
-                    placeholder="homeassistant"
-                    onInput={(e) => updateMqtt("ha_prefix", (e.target as HTMLInputElement).value)}
-                    class="w-full bg-zinc-800 text-zinc-100 border border-zinc-600 rounded px-2 py-1 text-xs font-mono mb-3"
+                    type="password"
+                    value={draft.web_password}
+                    onInput={(e) =>
+                      setDraft({ ...draft, web_password: (e.target as HTMLInputElement).value })
+                    }
+                    class="w-full bg-zinc-800 text-zinc-100 border border-zinc-600 rounded px-2 py-1 text-xs font-mono"
                   />
-                </>
+                  <Hint>Leave unchanged to keep the current password.</Hint>
+                </div>
               )}
-            </div>
-          </section>
+            </SubSection>
+          </SectionCard>
 
-          {/* ── Channel behaviour ────────────────────────────────────────── */}
-          <section class="mb-6">
-            <h3 class="text-xs font-semibold text-zinc-400 mb-3 uppercase tracking-wide">
-              Channel behaviour
-            </h3>
-            <label class="block mb-1 text-xs text-zinc-400">Position query interval (s)</label>
-            <div class="flex items-center gap-2">
-              <input
-                type="number"
-                value={draft.position_status_query_interval_s}
-                min={0}
-                max={65535}
-                onInput={(e) =>
-                  setDraft({
-                    ...draft,
-                    position_status_query_interval_s: Math.min(
-                      65535,
-                      Math.max(0, parseInt((e.target as HTMLInputElement).value) || 0),
-                    ),
-                  })
-                }
-                class="w-28 bg-zinc-800 text-zinc-100 border border-zinc-600 rounded px-2 py-1 text-xs font-mono"
-              />
-              <span class="text-zinc-500 text-xs">seconds (0 = disabled)</span>
-            </div>
-            <p class="text-zinc-600 text-xs mt-1">
-              How often to automatically request position from bidirectional 2-way channels.
-              Inhibited for 45 s after any manual command.
-            </p>
-          </section>
+          {/* ── Hardware ────────────────────────────────────────────────── */}
+          <SectionCard icon={Cpu} title="Hardware">
+            {/* Radio */}
+            <div ref={radioSectionRef}>
+              <SubSection icon={Radio} title="Radio (CC1101)" divided={false}>
+                <label class="flex items-center gap-2 cursor-pointer select-none mb-3">
+                  <input
+                    type="checkbox"
+                    checked={draft.radio.enabled}
+                    onChange={(e) => updateRadio("enabled", (e.target as HTMLInputElement).checked)}
+                    class="w-4 h-4 accent-blue-500"
+                  />
+                  <span class="text-xs text-zinc-300">Enable radio</span>
+                </label>
 
-          {/* ── Status LED ───────────────────────────────────────────────── */}
-          <section class="mb-6">
-            <h3 class="text-xs font-semibold text-zinc-400 mb-3 uppercase tracking-wide">
-              Status LED
-            </h3>
-            <p class="text-zinc-500 text-xs mb-3">
-              GPIO pin for a status LED driven by the LEDC peripheral. Set to{" "}
-              <span class="font-mono text-zinc-400">-1</span> to disable.
-            </p>
-            <div class="flex items-center gap-2">
-              <label class="w-14 shrink-0 text-xs text-zinc-400 text-right">GPIO</label>
-              <input
-                type="number"
-                value={draft.gpio_status_led}
-                min={-1}
-                max={39}
-                onInput={(e) =>
-                  setDraft({
-                    ...draft,
-                    gpio_status_led: Math.max(
-                      -1,
-                      Math.min(39, parseInt((e.target as HTMLInputElement).value) || -1),
-                    ),
-                  })
-                }
-                class="w-20 bg-zinc-800 text-zinc-100 border border-zinc-600 rounded px-2 py-1 text-xs font-mono"
-              />
-              {draft.gpio_status_led < 0 && <span class="text-zinc-500 text-xs">disabled</span>}
-            </div>
-          </section>
+                {radioDisabled && (
+                  <Alert class="mb-3">
+                    Radio is disabled. The gateway will not be able to control or receive status
+                    from blinds until the radio is enabled and saved.
+                  </Alert>
+                )}
 
-          {/* ── Security ────────────────────────────────────────────────── */}
-          <section class="mb-6">
-            <h3 class="text-xs font-semibold text-zinc-400 mb-3 uppercase tracking-wide">
-              Security
-            </h3>
-            <label class="flex items-center gap-2 mb-4 cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={draft.web_password_enabled}
-                onChange={(e) => {
-                  const enabled = (e.target as HTMLInputElement).checked;
-                  setDraft({
-                    ...draft,
-                    web_password_enabled: enabled,
-                    web_password: enabled ? "***UNCHANGED***" : "",
-                  });
-                }}
-                class="w-4 h-4 accent-blue-500"
-              />
-              <span class="text-xs text-zinc-300">Enable web UI password</span>
-            </label>
-            {draft.web_password_enabled && (
-              <div>
-                <label class="block mb-1 text-xs text-zinc-400">Password</label>
+                <Hint>GPIO pin numbers for the CC1101 SPI connection.</Hint>
+
+                <div
+                  class={`flex flex-col gap-2 mt-2 ${radioDisabled ? "opacity-40 pointer-events-none" : ""}`}
+                >
+                  {GPIO_FIELDS.map(({ key, label }) => (
+                    <GpioInput
+                      key={key}
+                      label={label}
+                      value={draft.radio[key] as number}
+                      error={gpioDupes.has(key)}
+                      onChange={(v) => updateRadio(key, v)}
+                    />
+                  ))}
+                  {gpioDupes.size > 0 && (
+                    <p class="text-red-400 text-xs">
+                      Each GPIO pin must be assigned to exactly one signal.
+                    </p>
+                  )}
+                  <div class="flex items-center gap-2 mt-1">
+                    <label class="text-xs text-zinc-400 shrink-0">SPI clock</label>
+                    <input
+                      type="number"
+                      value={draft.radio.spi_freq_hz}
+                      min={100000}
+                      max={10000000}
+                      step={100000}
+                      onInput={(e) =>
+                        updateRadio(
+                          "spi_freq_hz",
+                          Math.max(
+                            100000,
+                            parseInt((e.target as HTMLInputElement).value) || 500000,
+                          ),
+                        )
+                      }
+                      class="w-32 bg-zinc-800 text-zinc-100 border border-zinc-600 rounded px-2 py-1 text-xs font-mono"
+                    />
+                    <span class="text-zinc-500 text-xs">Hz</span>
+                  </div>
+                </div>
+              </SubSection>
+            </div>
+
+            {/* Status LED */}
+            <SubSection icon={Lightbulb} title="Status LED">
+              <Hint>
+                GPIO pin for a status LED driven by the LEDC peripheral. Set to{" "}
+                <span class="font-mono text-zinc-400">-1</span> to disable.
+              </Hint>
+              <div class="flex items-center gap-2 mt-2">
+                <label class="w-14 shrink-0 text-xs text-zinc-400 text-right">GPIO</label>
                 <input
-                  type="password"
-                  value={draft.web_password}
+                  type="number"
+                  value={draft.gpio_status_led}
+                  min={-1}
+                  max={39}
                   onInput={(e) =>
                     setDraft({
                       ...draft,
-                      web_password: (e.target as HTMLInputElement).value,
+                      gpio_status_led: Math.max(
+                        -1,
+                        Math.min(39, parseInt((e.target as HTMLInputElement).value) || -1),
+                      ),
                     })
                   }
-                  class="w-full bg-zinc-800 text-zinc-100 border border-zinc-600 rounded px-2 py-1 text-xs font-mono mb-1"
+                  class="w-20 bg-zinc-800 text-zinc-100 border border-zinc-600 rounded px-2 py-1 text-xs font-mono"
                 />
-                <p class="text-zinc-600 text-xs">
-                  Leave unchanged to keep the current password. Clear and type a new value to change
-                  it.
-                </p>
+                {draft.gpio_status_led < 0 && <span class="text-zinc-500 text-xs">disabled</span>}
               </div>
-            )}
-          </section>
+            </SubSection>
+          </SectionCard>
 
-          {/* ── Language ─────────────────────────────────────────────────── */}
-          <section class="mb-6">
-            <h3 class="text-xs font-semibold text-zinc-400 mb-3 uppercase tracking-wide">
-              Language
-            </h3>
-            <select
-              value={draft.language}
-              onChange={(e) =>
-                setDraft({
-                  ...draft,
-                  language: (e.target as HTMLSelectElement).value as "en" | "pl",
-                })
-              }
-              class="bg-zinc-800 text-zinc-100 border border-zinc-600 rounded px-2 py-1 text-xs font-mono"
-            >
-              <option value="en">English</option>
-              <option value="pl">Polski</option>
-            </select>
-          </section>
+          {/* ── Network ─────────────────────────────────────────────────── */}
+          <SectionCard icon={Globe} title="Network">
+            {/* General */}
+            <SubSection title="General" divided={false}>
+              <FieldLabel>Hostname</FieldLabel>
+              <input
+                type="text"
+                value={draft.hostname}
+                maxLength={63}
+                onInput={(e) =>
+                  setDraft({ ...draft, hostname: (e.target as HTMLInputElement).value })
+                }
+                class="w-full bg-zinc-800 text-zinc-100 border border-zinc-600 rounded px-2 py-1 text-xs font-mono"
+              />
+              <Hint>
+                Reachable via mDNS as{" "}
+                <span class="text-zinc-400 font-mono">{draft.hostname}.local</span>
+              </Hint>
+            </SubSection>
 
-          {/* ── Save ─────────────────────────────────────────────────────── */}
-          <div class="flex items-center gap-3 flex-wrap">
+            {/* MQTT */}
+            <SubSection icon={Server} title="MQTT">
+              <label class="flex items-center gap-2 cursor-pointer select-none mb-3">
+                <input
+                  type="checkbox"
+                  checked={draft.mqtt.enabled}
+                  onChange={(e) => updateMqtt("enabled", (e.target as HTMLInputElement).checked)}
+                  class="w-4 h-4 accent-blue-500"
+                />
+                <span class="text-xs text-zinc-300">Enable MQTT</span>
+              </label>
+
+              <div class={mqttDisabled ? "opacity-40 pointer-events-none" : ""}>
+                <div class="flex flex-col gap-3">
+                  <div>
+                    <FieldLabel>MQTT URL</FieldLabel>
+                    <input
+                      type="text"
+                      value={draft.mqtt.url}
+                      placeholder="mqtt://192.168.1.100:1883"
+                      onInput={(e) => updateMqtt("url", (e.target as HTMLInputElement).value)}
+                      class="w-full bg-zinc-800 text-zinc-100 border border-zinc-600 rounded px-2 py-1 text-xs font-mono"
+                    />
+                    <Hint>Use mqtt:// or mqtts:// for TLS.</Hint>
+                  </div>
+
+                  <div>
+                    <FieldLabel>Username</FieldLabel>
+                    <input
+                      type="text"
+                      value={draft.mqtt.username}
+                      onInput={(e) => updateMqtt("username", (e.target as HTMLInputElement).value)}
+                      class="w-full bg-zinc-800 text-zinc-100 border border-zinc-600 rounded px-2 py-1 text-xs font-mono"
+                    />
+                  </div>
+
+                  <div>
+                    <FieldLabel>Password</FieldLabel>
+                    <input
+                      type="password"
+                      value={draft.mqtt.password}
+                      onInput={(e) => updateMqtt("password", (e.target as HTMLInputElement).value)}
+                      class="w-full bg-zinc-800 text-zinc-100 border border-zinc-600 rounded px-2 py-1 text-xs font-mono"
+                    />
+                  </div>
+                </div>
+
+                <div class="border-t border-zinc-800 mt-4 pt-3">
+                  <Collapsible label="Advanced">
+                    <div class="flex flex-col gap-3 mt-2">
+                      <div>
+                        <FieldLabel>MQTT prefix</FieldLabel>
+                        <input
+                          type="text"
+                          value={draft.mqtt.mqtt_prefix}
+                          placeholder="unigtw"
+                          onInput={(e) =>
+                            updateMqtt("mqtt_prefix", (e.target as HTMLInputElement).value)
+                          }
+                          class="w-full bg-zinc-800 text-zinc-100 border border-zinc-600 rounded px-2 py-1 text-xs font-mono"
+                        />
+                      </div>
+
+                      <label class="flex items-center gap-2 cursor-pointer select-none">
+                        <input
+                          type="checkbox"
+                          checked={draft.mqtt.ha_discovery_enabled}
+                          onChange={(e) =>
+                            updateMqtt(
+                              "ha_discovery_enabled",
+                              (e.target as HTMLInputElement).checked,
+                            )
+                          }
+                          class="w-4 h-4 accent-blue-500"
+                        />
+                        <span class="text-xs text-zinc-300">Enable Home Assistant discovery</span>
+                      </label>
+
+                      {draft.mqtt.ha_discovery_enabled && (
+                        <div>
+                          <FieldLabel>HA discovery prefix</FieldLabel>
+                          <input
+                            type="text"
+                            value={draft.mqtt.ha_prefix}
+                            placeholder="homeassistant"
+                            onInput={(e) =>
+                              updateMqtt("ha_prefix", (e.target as HTMLInputElement).value)
+                            }
+                            class="w-full bg-zinc-800 text-zinc-100 border border-zinc-600 rounded px-2 py-1 text-xs font-mono"
+                          />
+                        </div>
+                      )}
+                    </div>
+                  </Collapsible>
+                </div>
+              </div>
+            </SubSection>
+          </SectionCard>
+
+          {/* ── Behaviour ───────────────────────────────────────────────── */}
+          <SectionCard icon={SlidersHorizontal} title="Behaviour">
+            <div>
+              <FieldLabel>Position query interval</FieldLabel>
+              <div class="flex items-center gap-2">
+                <input
+                  type="number"
+                  value={draft.position_status_query_interval_s}
+                  min={0}
+                  max={65535}
+                  onInput={(e) =>
+                    setDraft({
+                      ...draft,
+                      position_status_query_interval_s: Math.min(
+                        65535,
+                        Math.max(0, parseInt((e.target as HTMLInputElement).value) || 0),
+                      ),
+                    })
+                  }
+                  class="w-28 bg-zinc-800 text-zinc-100 border border-zinc-600 rounded px-2 py-1 text-xs font-mono"
+                />
+                <span class="text-zinc-500 text-xs">seconds (0 = disabled)</span>
+              </div>
+              <Hint>
+                How often to automatically request position from bidirectional 2-way channels.
+                Inhibited for 45 s after any manual command.
+              </Hint>
+            </div>
+          </SectionCard>
+
+          {/* ── Save ────────────────────────────────────────────────────── */}
+          <div class="flex items-center gap-3 flex-wrap mb-2">
             <Button
               variant="primary"
               onClick={save}
@@ -580,12 +616,12 @@ export function Settings() {
             )}
           </div>
 
-          {/* ── Backup / Restore ─────────────────────────────────────────── */}
-          <section class="mt-8 mb-4">
-            <h3 class="text-xs font-semibold text-zinc-400 mb-3 uppercase tracking-wide">
+          {/* ── Backup / Restore ────────────────────────────────────────── */}
+          <div class="border-t border-zinc-800 pt-4 mt-2 mb-4">
+            <p class="text-zinc-500 text-xs font-semibold uppercase tracking-wide mb-2">
               Backup &amp; Restore
-            </h3>
-            <p class="text-zinc-500 text-xs mb-3">
+            </p>
+            <p class="text-zinc-600 text-xs mb-3">
               Export all settings and channels as a JSON file, or restore from a previous backup.
             </p>
             <div class="flex gap-2 flex-wrap">
@@ -599,7 +635,7 @@ export function Settings() {
               class="hidden"
               onChange={handleRestoreFileChange}
             />
-          </section>
+          </div>
         </div>
       </div>
 

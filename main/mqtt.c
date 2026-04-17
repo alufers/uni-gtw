@@ -28,8 +28,7 @@ static SemaphoreHandle_t        s_mutex;
  * Protected by s_mutex. Uses plain chars to avoid sstr_t lifetime issues. */
 typedef struct {
     bool     enabled;
-    char     broker[128];
-    int      port;
+    char     url[192];
     char     username[64];
     char     password[128];
 } mqtt_active_cfg_t;
@@ -537,21 +536,19 @@ static void mqtt_do_deinit(void)
 
 static void mqtt_do_init(const mqtt_active_cfg_t *cfg)
 {
-    if (!cfg->enabled || cfg->broker[0] == '\0') {
+    if (!cfg->enabled || cfg->url[0] == '\0') {
         g_mqtt_status = mqtt_status_t_unconfigured;
         return;
     }
 
-    char uri[192];
     char avty_topic[96];
     config_lock();
-    snprintf(uri, sizeof(uri), "mqtt://%s:%d", cfg->broker, cfg->port);
     snprintf(avty_topic, sizeof(avty_topic), "%s/availability",
              sstr_cstr(g_config.mqtt.mqtt_prefix));
     config_unlock();
 
     esp_mqtt_client_config_t mqtt_cfg = {
-        .broker.address.uri    = uri,
+        .broker.address.uri    = cfg->url,
         .session.last_will     = {
             .topic             = avty_topic,
             .msg               = "offline",
@@ -583,7 +580,7 @@ static void mqtt_do_init(const mqtt_active_cfg_t *cfg)
     esp_mqtt_client_start(s_client);
     g_mqtt_status = mqtt_status_t_connecting;
     s_active_cfg  = *cfg;
-    ESP_LOGI(TAG, "MQTT client started → %s", uri);
+    ESP_LOGI(TAG, "MQTT client started → %s", cfg->url);
 }
 
 /* ── Public API ──────────────────────────────────────────────────────────── */
@@ -597,8 +594,7 @@ void mqtt_init(void)
     mqtt_active_cfg_t cfg = {0};
     config_lock();
     cfg.enabled = (bool)g_config.mqtt.enabled;
-    cfg.port    = g_config.mqtt.port;
-    strlcpy(cfg.broker,   sstr_cstr(g_config.mqtt.broker),   sizeof(cfg.broker));
+    strlcpy(cfg.url,      sstr_cstr(g_config.mqtt.url),      sizeof(cfg.url));
     strlcpy(cfg.username, sstr_cstr(g_config.mqtt.username), sizeof(cfg.username));
     strlcpy(cfg.password, sstr_cstr(g_config.mqtt.password), sizeof(cfg.password));
     config_unlock();
@@ -611,8 +607,7 @@ void mqtt_apply_config(void)
     mqtt_active_cfg_t cfg = {0};
     config_lock();
     cfg.enabled = (bool)g_config.mqtt.enabled;
-    cfg.port    = g_config.mqtt.port;
-    strlcpy(cfg.broker,   sstr_cstr(g_config.mqtt.broker),   sizeof(cfg.broker));
+    strlcpy(cfg.url,      sstr_cstr(g_config.mqtt.url),      sizeof(cfg.url));
     strlcpy(cfg.username, sstr_cstr(g_config.mqtt.username), sizeof(cfg.username));
     strlcpy(cfg.password, sstr_cstr(g_config.mqtt.password), sizeof(cfg.password));
     config_unlock();

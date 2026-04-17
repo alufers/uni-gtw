@@ -104,8 +104,8 @@ void config_init(void)
     gateway_config_t_init(&g_config);
 
     /* Set defaults */
-    g_config.mqtt.port                       = 1883;
     g_config.mqtt.ha_discovery_enabled       = 1;
+    g_config.mqtt.url                        = sstr("");
     g_config.position_status_query_interval_s = 60;
     g_config.gpio_status_led                 = -1;
 

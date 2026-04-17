@@ -89,8 +89,7 @@ struct web_info_t {
 
 struct mqtt_config_t {
     bool enabled;
-    sstr_t broker;
-    int port;
+    sstr_t url;
     sstr_t username;
     sstr_t password;
     bool ha_discovery_enabled;
