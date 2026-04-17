@@ -14,10 +14,10 @@ import {
   Trash2,
   CircleHelp,
 } from "lucide-preact";
-import { Button } from "./Button";
-import { Collapsible } from "./Collapsible";
-import { Dropdown } from "./Dropdown";
-import { Modal } from "./Modal";
+import { Button } from "./ui/Button";
+import { Collapsible } from "./ui/Collapsible";
+import { Dropdown } from "./ui/Dropdown";
+import { Modal } from "./ui/Modal";
 import { ChannelForm } from "./ChannelForm";
 import { rssiToSignalIcon } from "./icons";
 import { Channel, ChannelState } from "./channelTypes";

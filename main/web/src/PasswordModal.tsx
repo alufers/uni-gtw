@@ -1,5 +1,5 @@
 import { useState } from "preact/hooks";
-import { Modal } from "./Modal";
+import { Modal } from "./ui/Modal";
 import { InfoResponse } from "./wsTypes";
 
 interface PasswordModalProps {

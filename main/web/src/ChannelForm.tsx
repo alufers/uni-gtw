@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { X, Plus, Radio } from "lucide-preact";
-import { Button } from "./Button";
+import { Button } from "./ui/Button";
 import { Channel, DeviceClass, DEVICE_CLASS_OPTIONS, toMqttName } from "./channelTypes";
 import { PacketInfo } from "./wsTypes";
 

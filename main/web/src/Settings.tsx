@@ -1,7 +1,8 @@
 import { useContext, useEffect, useRef, useState } from "preact/hooks";
 import { AuthContext } from "./AuthContext";
-import { Button } from "./Button";
-import { Modal } from "./Modal";
+import { Button } from "./ui/Button";
+import { Modal } from "./ui/Modal";
+import { Alert } from "./ui/Alert";
 
 interface MqttConfig {
   enabled: boolean;
@@ -293,10 +294,10 @@ export function Settings() {
             </label>
 
             {radioDisabled && (
-              <div class="border border-amber-800 bg-amber-950 text-amber-300 text-xs rounded p-3 mb-4">
+              <Alert class="mb-4">
                 Radio is disabled. The gateway will not be able to control or receive status from
                 blinds until the radio is enabled and saved.
-              </div>
+              </Alert>
             )}
 
             <p class="text-zinc-500 text-xs mb-3">
@@ -614,11 +615,11 @@ export function Settings() {
           }}
         >
           <p class="text-xs text-zinc-500 mb-3 font-mono break-all">{restoreFileName}</p>
-          <p class="text-sm text-zinc-300 mb-2">
+          <p class="text-sm text-zinc-300 mb-3">
             All current settings and channels will be <strong>overwritten</strong> with the data
             from this backup. The device will reboot to apply the new configuration.
           </p>
-          <p class="text-xs text-zinc-500">This action cannot be undone.</p>
+          <Alert variant="warning">This action cannot be undone.</Alert>
         </Modal>
       )}
     </>

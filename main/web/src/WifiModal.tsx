@@ -1,7 +1,7 @@
 import { useEffect, useState } from "preact/hooks";
 import { LoaderCircle, RefreshCw } from "lucide-preact";
-import { Modal } from "./Modal";
-import { Button } from "./Button";
+import { Modal } from "./ui/Modal";
+import { Button } from "./ui/Button";
 import { ScanEntry } from "./wsTypes";
 import { rssiToWifiIcon } from "./icons";
 

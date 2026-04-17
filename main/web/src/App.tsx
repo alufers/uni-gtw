@@ -1,12 +1,12 @@
 import { useContext, useEffect, useRef, useState } from "preact/hooks";
-import { Terminal } from "lucide-preact";
+import { Terminal, X } from "lucide-preact";
 import { AuthContext } from "./AuthContext";
 import { AuthGuard } from "./AuthGuard";
 import { Console } from "./Console";
 import { Channels } from "./Channels";
 import { Channel } from "./channelTypes";
 import { Settings } from "./Settings";
-import { Tabs } from "./Tabs";
+import { Tabs } from "./ui/Tabs";
 import { TopBar } from "./TopBar";
 import { useJsonWebsocket, ReadyState } from "./useWebsocket";
 import { WifiModal } from "./WifiModal";
@@ -151,9 +151,10 @@ function AppInner() {
       {/* Tab bar with console toggle on the right */}
       <Tabs tabs={TABS} active={activeTab} onChange={setActiveTab} rightSlot={consoleToggle} />
 
-      {/* Main content + optional console sidebar */}
-      <div class="flex flex-1 overflow-hidden">
-        <div class="flex-1 overflow-hidden">
+      {/* Main content + optional console */}
+      <div class="flex flex-1 overflow-hidden relative">
+        {/* Main view — hidden behind console on mobile when console is open */}
+        <div class={`flex-1 overflow-hidden ${showConsole ? "hidden md:block" : ""}`}>
           {activeTab === "control" ? (
             <Channels
               channels={channels}
@@ -167,9 +168,17 @@ function AppInner() {
           )}
         </div>
 
-        {/* Console sidebar — visible on any tab */}
+        {/* Console — full-screen overlay on mobile, sidebar on desktop */}
         {showConsole && (
-          <div class="w-[500px] shrink-0 border-l border-zinc-800 overflow-hidden flex flex-col">
+          <div class="absolute inset-0 z-20 flex flex-col bg-zinc-950 md:relative md:inset-auto md:z-auto md:w-[500px] md:shrink-0 md:border-l md:border-zinc-800">
+            {/* Close button visible only on mobile */}
+            <button
+              class="md:hidden flex items-center gap-1.5 px-3 py-2 text-xs text-zinc-400 hover:text-zinc-200 border-b border-zinc-800 bg-transparent border-l-0 border-r-0 border-t-0 cursor-pointer self-end"
+              onClick={() => setShowConsole(false)}
+            >
+              <X size={13} />
+              Close console
+            </button>
             <Console lines={lines} />
           </div>
         )}

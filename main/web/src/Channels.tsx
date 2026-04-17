@@ -1,6 +1,6 @@
 import { useState } from "preact/hooks";
 import { Plus, Settings } from "lucide-preact";
-import { Button } from "./Button";
+import { Button } from "./ui/Button";
 import { ChannelCard } from "./ChannelCard";
 import { ChannelForm } from "./ChannelForm";
 import { RadioStatus, PacketInfo } from "./wsTypes";
