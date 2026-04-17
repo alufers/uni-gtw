@@ -1,0 +1,22 @@
+---
+sidebar_position: 1
+---
+
+# uni-gtw Intro
+
+**uni-gtw** is a custom firmware for ESP32 chips designed to control motorized blinds manufacured by [Mobilus Motor Sp. z o.o.](https://mobilus.pl/). It is compatible with the [**COSMO | 2WAY**](https://mobilus.pl/technologie/2way/) RF protocol, as well as the older **COSMO** protocol (manufactured before 2017.06). The gateway can be easily integrated with [Home Assistant](https://www.home-assistant.io/)  using MQTT.
+
+![Screenshot of the gateway's web interface](/img/uni-gtw-main-screenshot.png)
+
+## Features
+
+- Basic blinds control UP/DOWN/STOP
+- Advanced commands for newer motors/controllers: setting exact position, adjusting tilt.
+- Receiving feedback packets from controlled devices (even for older COSMO non 2way protocol) - allows for confirmation that the covering has opened/closed, potential obstructions are also detected.
+- Support for C-SW relay modules
+- MQTT integration, with HA autodiscovery - limitless automation options :)
+- Web UI for setting up the gateway & issuing simple commands
+- Fully local operation - no cloud server or internet connection required to work
+- Can be paired alongside existing Mobilus remotes (and even the 1st party gateway) - commands sent with those are also received and reflected via MQTT
+- The gateway runs on very cheap hardware (can be DIY-ed for as little as ~30 pln) - just an ESP32 and CC1101 radio module
+- Fully free and open-source

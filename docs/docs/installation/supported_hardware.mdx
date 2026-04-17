@@ -1,0 +1,17 @@
+---
+sidebar_position: 1
+---
+
+# Supported hardware
+
+In principle uni-gtw needs to do two things: communicate over Wi-Fi with your local network and communicate over 868Mhz radio with the blinds. For that it needs:
+
+- An ESP32 series microcontroller (ESP32, ESP32-C3)
+- A TI [CC1101](https://www.ti.com/lit/ds/symlink/cc1101.pdf) radio transciever
+
+The microcontroller communicates with the radio chip using SPI. For a DIY-friendly build it's best to grab both of those in a form of devkit/module, as they contain all the neccessary support components to run both of those. 
+
+## DIY Example 1: ESP32 DEVKIT V1 + no-name 868 Mhz CC1101 module
+
+
+TODO: photo
