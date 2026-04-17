@@ -646,6 +646,14 @@ static void apply_settings_from_buf(const char *buf, int len)
     sstr_t in = sstr_of(buf, (size_t)len);
 
     config_lock();
+    /* Free old sstr_t values before unmarshal overwrites them (prevents leak). */
+    sstr_free(g_config.hostname);         g_config.hostname = NULL;
+    sstr_free(g_config.mqtt.url);         g_config.mqtt.url = NULL;
+    sstr_free(g_config.mqtt.username);    g_config.mqtt.username = NULL;
+    sstr_free(g_config.mqtt.password);    g_config.mqtt.password = NULL;
+    sstr_free(g_config.mqtt.ha_prefix);   g_config.mqtt.ha_prefix = NULL;
+    sstr_free(g_config.mqtt.mqtt_prefix); g_config.mqtt.mqtt_prefix = NULL;
+    sstr_free(g_config.web_password);     g_config.web_password = NULL;
     json_unmarshal_selected_gateway_config_t(in, &g_config, mask,
                                               gateway_config_t_FIELD_MASK_WORD_COUNT);
     config_unlock();
@@ -654,6 +662,8 @@ static void apply_settings_from_buf(const char *buf, int len)
 
     /* Handle password: hash a new value, or restore if sentinel / empty */
     config_lock();
+    if (!g_config.web_password)
+        g_config.web_password = sstr(""); /* field absent → treat as empty → keep old hash */
     const char *new_pw_str = sstr_cstr(g_config.web_password);
     if (strcmp(new_pw_str, "***UNCHANGED***") == 0 || strlen(new_pw_str) == 0) {
         /* Client sent sentinel or empty — keep previous hash */

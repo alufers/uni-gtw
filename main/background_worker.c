@@ -9,6 +9,7 @@
 #include <time.h>
 
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/timers.h"
 
@@ -29,6 +30,9 @@ static time_t s_inhibit_until = 0; /* epoch second; 0 = not inhibited */
 
 /* The query timer fires every CHECK_INTERVAL_MS to check for due channels. */
 #define CHECK_INTERVAL_MS 10000
+
+/* Log free heap every N query-timer ticks (10 s each → every 60 s). */
+#define HEAP_LOG_INTERVAL_TICKS 6
 
 /* ── Position query logic ────────────────────────────────────────────────── */
 
@@ -94,6 +98,14 @@ static void save_timer_cb(TimerHandle_t t)
 static void query_timer_cb(TimerHandle_t t)
 {
     (void)t;
+    static int s_tick = 0;
+    if (++s_tick >= HEAP_LOG_INTERVAL_TICKS) {
+        s_tick = 0;
+        ESP_LOGI(TAG, "Free heap: %u bytes (min ever: %u)",
+                 (unsigned)esp_get_free_heap_size(),
+                 (unsigned)esp_get_minimum_free_heap_size());
+    }
+
     if (radio_get_state() != RADIO_STATE_OK)
         return;
     maybe_query_position();
