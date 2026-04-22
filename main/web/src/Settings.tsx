@@ -18,11 +18,14 @@ interface MqttConfig {
 
 interface RadioConfig {
   enabled: boolean;
+  type: "cc1101" | "sx1262";
   gpio_miso: number;
   gpio_mosi: number;
   gpio_sck: number;
   gpio_csn: number;
   gpio_gdo0: number;
+  gpio_rst: number;
+  gpio_busy: number;
   spi_freq_hz: number;
 }
 
@@ -47,6 +50,7 @@ function findGpioDuplicates(radio: RadioConfig): Set<keyof RadioConfig> {
     "gpio_sck",
     "gpio_csn",
     "gpio_gdo0",
+    ...(radio.type === "sx1262" ? (["gpio_rst", "gpio_busy"] as (keyof RadioConfig)[]) : []),
   ];
   const seen = new Map<number, keyof RadioConfig>();
   const dupes = new Set<keyof RadioConfig>();
@@ -62,12 +66,11 @@ function findGpioDuplicates(radio: RadioConfig): Set<keyof RadioConfig> {
   return dupes;
 }
 
-const GPIO_FIELDS: { key: keyof RadioConfig; label: string }[] = [
+const GPIO_FIELDS_BASE: { key: keyof RadioConfig; label: string }[] = [
   { key: "gpio_miso", label: "MISO" },
   { key: "gpio_mosi", label: "MOSI" },
   { key: "gpio_sck", label: "SCK" },
   { key: "gpio_csn", label: "CSN" },
-  { key: "gpio_gdo0", label: "GDO0" },
 ];
 
 /* ── Shared primitive components ────────────────────────────────────────────── */
@@ -357,7 +360,7 @@ export function Settings() {
           <SectionCard icon={Cpu} title="Hardware">
             {/* Radio */}
             <div ref={radioSectionRef}>
-              <SubSection icon={Radio} title="Radio (CC1101)" divided={false}>
+              <SubSection icon={Radio} title="Radio" divided={false}>
                 <label class="flex items-center gap-2 cursor-pointer select-none mb-3">
                   <input
                     type="checkbox"
@@ -375,12 +378,29 @@ export function Settings() {
                   </Alert>
                 )}
 
-                <Hint>GPIO pin numbers for the CC1101 SPI connection.</Hint>
+                <div>
+                  <FieldLabel>Radio type</FieldLabel>
+                  <select
+                    value={draft.radio.type}
+                    onChange={(e) =>
+                      updateRadio(
+                        "type",
+                        (e.target as HTMLSelectElement).value as "cc1101" | "sx1262",
+                      )
+                    }
+                    class="bg-zinc-800 text-zinc-100 border border-zinc-600 rounded px-2 py-1 text-xs font-mono"
+                  >
+                    <option value="cc1101">CC1101</option>
+                    <option value="sx1262">SX1262</option>
+                  </select>
+                </div>
+
+                <Hint>GPIO pin numbers for the SPI connection.</Hint>
 
                 <div
                   class={`flex flex-col gap-2 mt-2 ${radioDisabled ? "opacity-40 pointer-events-none" : ""}`}
                 >
-                  {GPIO_FIELDS.map(({ key, label }) => (
+                  {GPIO_FIELDS_BASE.map(({ key, label }) => (
                     <GpioInput
                       key={key}
                       label={label}
@@ -389,6 +409,28 @@ export function Settings() {
                       onChange={(v) => updateRadio(key, v)}
                     />
                   ))}
+                  <GpioInput
+                    label={draft.radio.type === "sx1262" ? "DIO1" : "GDO0"}
+                    value={draft.radio.gpio_gdo0}
+                    error={gpioDupes.has("gpio_gdo0")}
+                    onChange={(v) => updateRadio("gpio_gdo0", v)}
+                  />
+                  {draft.radio.type === "sx1262" && (
+                    <>
+                      <GpioInput
+                        label="RST"
+                        value={draft.radio.gpio_rst}
+                        error={gpioDupes.has("gpio_rst")}
+                        onChange={(v) => updateRadio("gpio_rst", v)}
+                      />
+                      <GpioInput
+                        label="BUSY"
+                        value={draft.radio.gpio_busy}
+                        error={gpioDupes.has("gpio_busy")}
+                        onChange={(v) => updateRadio("gpio_busy", v)}
+                      />
+                    </>
+                  )}
                   {gpioDupes.size > 0 && (
                     <p class="text-red-400 text-xs">
                       Each GPIO pin must be assigned to exactly one signal.

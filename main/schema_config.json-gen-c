@@ -97,13 +97,21 @@ struct mqtt_config_t {
     sstr_t mqtt_prefix;
 }
 
+enum radio_type_t {
+    cc1101,
+    sx1262
+}
+
 struct radio_config_t {
     bool enabled;
+    radio_type_t type;
     int gpio_miso;
     int gpio_mosi;
     int gpio_sck;
     int gpio_csn;
-    int gpio_gdo0;
+    int gpio_gdo0;        // CC1101: GDO0 IRQ; SX1262: DIO1 IRQ
+    int gpio_rst;         // SX1262 RST (-1 for CC1101)
+    int gpio_busy;        // SX1262 BUSY (-1 for CC1101)
     int spi_freq_hz;
 }
 

@@ -396,12 +396,26 @@ static int do_config_set(int argc, char **argv) {
   } else if (strcmp(name, "radio.spi_freq_hz") == 0) {
     g_config.radio.spi_freq_hz = (int)strtol(val, NULL, 0);
     need_radio = true;
+  } else if (strcmp(name, "radio.type") == 0) {
+    if (strcmp(val, "sx1262") == 0) {
+      g_config.radio.type = radio_type_t_sx1262;
+    } else {
+      g_config.radio.type = radio_type_t_cc1101;
+    }
+    need_radio = true;
+  } else if (strcmp(name, "radio.gpio_rst") == 0) {
+    g_config.radio.gpio_rst = (int)strtol(val, NULL, 0);
+    need_radio = true;
+  } else if (strcmp(name, "radio.gpio_busy") == 0) {
+    g_config.radio.gpio_busy = (int)strtol(val, NULL, 0);
+    need_radio = true;
   } else {
     config_unlock();
     printf("Unknown setting: %s\n", name);
-    printf("Valid: gpio_status_led, radio.enabled, radio.gpio_miso,\n"
-           "       radio.gpio_mosi, radio.gpio_sck, radio.gpio_csn,\n"
-           "       radio.gpio_gdo0, radio.spi_freq_hz\n");
+    printf("Valid: gpio_status_led, radio.enabled, radio.type,\n"
+           "       radio.gpio_miso, radio.gpio_mosi, radio.gpio_sck,\n"
+           "       radio.gpio_csn, radio.gpio_gdo0, radio.spi_freq_hz,\n"
+           "       radio.gpio_rst (SX1262), radio.gpio_busy (SX1262)\n");
     return 1;
   }
   config_unlock();
@@ -424,7 +438,7 @@ static void register_config_set(void) {
   const esp_console_cmd_t cmd = {
       .command = "config_set",
       .help = "Set a runtime config value",
-      .hint = " <gpio_status_led|radio.enabled|radio.gpio_*|radio.spi_freq_hz> "
+      .hint = " <gpio_status_led|radio.enabled|radio.type|radio.gpio_*|radio.spi_freq_hz> "
               "<value>",
       .func = &do_config_set,
       .argtable = &config_set_args,

@@ -7,7 +7,7 @@
 #include "freertos/semphr.h"
 #include "json.gen.h"
 
-/* ── Default CC1101 pin assignments and SPI speed ────────────────────────── */
+/* ── Default radio pin assignments and SPI speed ─────────────────────────── */
 
 #define CONFIG_RADIO_DEFAULT_MISO      19
 #define CONFIG_RADIO_DEFAULT_MOSI      23
@@ -15,6 +15,11 @@
 #define CONFIG_RADIO_DEFAULT_CSN        5
 #define CONFIG_RADIO_DEFAULT_GDO0      15
 #define CONFIG_RADIO_DEFAULT_SPI_FREQ  500000
+
+/* Defaults for new radio_type / SX1262 fields (backwards-compatible) */
+#define CONFIG_RADIO_DEFAULT_TYPE      radio_type_t_cc1101
+#define CONFIG_RADIO_DEFAULT_RST       (-1)
+#define CONFIG_RADIO_DEFAULT_BUSY      (-1)
 
 /* ── Global config state ─────────────────────────────────────────────────── */
 
