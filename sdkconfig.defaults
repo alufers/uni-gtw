@@ -1,3 +1,5 @@
 CONFIG_HTTPD_WS_SUPPORT=y
 # Timer daemon task stack — must accommodate config_do_save() + maybe_query_position()
 CONFIG_FREERTOS_TIMER_TASK_STACK_DEPTH=4096
+# Use USB JTAG as the primary interactive console (REPL)
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y

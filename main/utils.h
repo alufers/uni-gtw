@@ -5,6 +5,8 @@
 #include <stdint.h>
 #include <time.h>
 
+#include "cosmo/cosmo.h"
+
 /* ── Time ────────────────────────────────────────────────────────────────── */
 
 /**
@@ -47,3 +49,18 @@ bool utils_crypto_hash_password(const char *password,
  * utils_crypto_hash_password().  Returns true if the password matches.
  */
 bool utils_crypto_verify_password(const char *password, const char *stored);
+
+/* ── Cosmo command helpers ───────────────────────────────────────────────── */
+
+/**
+ * Map a channel_cmd_name_t integer (from the WS protocol schema) to the
+ * corresponding cosmo_cmd_t.  Returns false for unknown values.
+ */
+bool utils_cmd_name_to_cosmo(int cmd_name, cosmo_cmd_t *out);
+
+/**
+ * Parse a command string (e.g. "UP", "STOP_DOWN") or decimal/hex integer
+ * into the corresponding cosmo_cmd_t.  Case-insensitive.
+ * Returns false if the string is not recognised.
+ */
+bool utils_str_to_cosmo_cmd(const char *s, cosmo_cmd_t *out);

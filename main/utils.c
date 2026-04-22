@@ -1,8 +1,12 @@
 #include "utils.h"
 
+#include <ctype.h>
+#include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 #include <time.h>
+
+#include "json.gen.h"
 
 #include "esp_log.h"
 #include "esp_random.h"
@@ -194,4 +198,73 @@ bool utils_crypto_verify_password(const char *password, const char *stored)
     for (int i = 0; i < HASH_LEN; i++)
         diff |= stored_hash[i] ^ computed_hash[i];
     return diff == 0;
+}
+
+/* ── Cosmo command helpers ───────────────────────────────────────────────── */
+
+bool utils_cmd_name_to_cosmo(int cmd_name, cosmo_cmd_t *out)
+{
+    switch (cmd_name) {
+    case channel_cmd_name_t_UP:               *out = COSMO_BTN_UP;               break;
+    case channel_cmd_name_t_DOWN:             *out = COSMO_BTN_DOWN;             break;
+    case channel_cmd_name_t_STOP:             *out = COSMO_BTN_STOP;             break;
+    case channel_cmd_name_t_UP_DOWN:          *out = COSMO_BTN_UP_DOWN;          break;
+    case channel_cmd_name_t_STOP_DOWN:        *out = COSMO_BTN_STOP_DOWN;        break;
+    case channel_cmd_name_t_STOP_HOLD:        *out = COSMO_BTN_STOP_HOLD;        break;
+    case channel_cmd_name_t_PROG:             *out = COSMO_BTN_PROG;             break;
+    case channel_cmd_name_t_STOP_UP:          *out = COSMO_BTN_STOP_UP;          break;
+    case channel_cmd_name_t_REQUEST_FEEDBACK: *out = COSMO_BTN_REQUEST_FEEDBACK; break;
+    case channel_cmd_name_t_REQUEST_POSITION: *out = COSMO_BTN_REQUEST_POSITION; break;
+    case channel_cmd_name_t_SET_POSITION:     *out = COSMO_BTN_SET_POSITION;     break;
+    case channel_cmd_name_t_SET_TILT:         *out = COSMO_BTN_SET_TILT;         break;
+    case channel_cmd_name_t_TILT_INCREASE:    *out = COSMO_BTN_TILT_INCREASE;    break;
+    case channel_cmd_name_t_TILT_DECREASE:    *out = COSMO_BTN_TILT_DECREASE;    break;
+    default: return false;
+    }
+    return true;
+}
+
+static const struct { const char *name; cosmo_cmd_t cmd; } s_cmd_table[] = {
+    { "UP",                 COSMO_BTN_UP               },
+    { "DOWN",               COSMO_BTN_DOWN             },
+    { "STOP",               COSMO_BTN_STOP             },
+    { "UP_DOWN",            COSMO_BTN_UP_DOWN          },
+    { "STOP_DOWN",          COSMO_BTN_STOP_DOWN        },
+    { "STOP_HOLD",          COSMO_BTN_STOP_HOLD        },
+    { "PROG",               COSMO_BTN_PROG             },
+    { "STOP_UP",            COSMO_BTN_STOP_UP          },
+    { "REQUEST_FEEDBACK",   COSMO_BTN_REQUEST_FEEDBACK },
+    { "REQUEST_POSITION",   COSMO_BTN_REQUEST_POSITION },
+    { "SET_POSITION",       COSMO_BTN_SET_POSITION     },
+    { "SET_TILT",           COSMO_BTN_SET_TILT         },
+    { "TILT_INCREASE",      COSMO_BTN_TILT_INCREASE    },
+    { "TILT_DECREASE",      COSMO_BTN_TILT_DECREASE    },
+    { "DETAILED_FEEDBACK",  COSMO_BTN_DETAILED_FEEDBACK},
+};
+
+bool utils_str_to_cosmo_cmd(const char *s, cosmo_cmd_t *out)
+{
+    if (!s || !out) return false;
+
+    /* Case-insensitive name match */
+    for (size_t i = 0; i < sizeof(s_cmd_table) / sizeof(s_cmd_table[0]); i++) {
+        const char *n = s_cmd_table[i].name;
+        size_t j = 0;
+        while (n[j] && toupper((unsigned char)s[j]) == (unsigned char)n[j])
+            j++;
+        if (!n[j] && !s[j]) {
+            *out = s_cmd_table[i].cmd;
+            return true;
+        }
+    }
+
+    /* Integer fallback (decimal or 0x-prefixed hex) */
+    char *end;
+    long v = strtol(s, &end, 0);
+    if (*end == '\0' && end != s) {
+        *out = (cosmo_cmd_t)v;
+        return true;
+    }
+
+    return false;
 }

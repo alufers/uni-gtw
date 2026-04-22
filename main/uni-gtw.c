@@ -9,6 +9,7 @@
 #include "background_worker.h"
 #include "channel.h"
 #include "config.h"
+#include "console.h"
 #include "esp_littlefs.h"
 #include "mqtt.h"
 #include "radio.h"
@@ -92,4 +93,6 @@ void app_main(void)
     mqtt_init();
 
     webserver_start_status_timer();
+
+    console_init();
 }

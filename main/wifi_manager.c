@@ -62,6 +62,18 @@ static esp_err_t nvs_save_credentials(const char *ssid, const char *pass)
     return err;
 }
 
+esp_err_t wifi_manager_clear_credentials(void)
+{
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(WIFI_NVS_NAMESPACE, NVS_READWRITE, &h);
+    if (err != ESP_OK) return err;
+    nvs_erase_key(h, WIFI_NVS_KEY_SSID);
+    nvs_erase_key(h, WIFI_NVS_KEY_PASS);
+    err = nvs_commit(h);
+    nvs_close(h);
+    return err;
+}
+
 /* ── Mode helpers ─────────────────────────────────────────────────────────── */
 
 static esp_err_t start_ap_mode(void)
@@ -230,10 +242,12 @@ esp_err_t wifi_manager_set_credentials(const char *ssid, const char *password)
     sta_cfg.sta.threshold.authmode = strlen(password) > 0 ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
 
     if (s_mode == WIFI_MGR_MODE_AP) {
-        /* Switch to APSTA: keep AP serving the page while trying to connect as STA */
-        esp_wifi_set_mode(WIFI_MODE_APSTA);
+        /* Set config before switching mode: mode change fires WIFI_EVENT_STA_START
+         * which immediately calls esp_wifi_connect(), so the config must be in
+         * place before that event fires. */
         esp_wifi_set_config(WIFI_IF_STA, &sta_cfg);
-        esp_wifi_connect();
+        esp_wifi_set_mode(WIFI_MODE_APSTA);
+        /* STA_START event handler calls esp_wifi_connect() — no need to here. */
         /* s_mode will be confirmed STA once STA_CONNECTED fires and drops APSTA */
     } else {
         esp_wifi_disconnect();

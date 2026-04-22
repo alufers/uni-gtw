@@ -335,29 +335,6 @@ static void scan_task(void *arg)
     vTaskDelete(NULL);
 }
 
-/* ── channel_cmd_name_t → cosmo_cmd_t ───────────────────────────────────── */
-
-static bool cmd_name_to_cosmo(int cmd_name, cosmo_cmd_t *out)
-{
-    switch (cmd_name) {
-    case channel_cmd_name_t_UP:               *out = COSMO_BTN_UP; break;
-    case channel_cmd_name_t_DOWN:             *out = COSMO_BTN_DOWN; break;
-    case channel_cmd_name_t_STOP:             *out = COSMO_BTN_STOP; break;
-    case channel_cmd_name_t_UP_DOWN:          *out = COSMO_BTN_UP_DOWN; break;
-    case channel_cmd_name_t_STOP_DOWN:        *out = COSMO_BTN_STOP_DOWN; break;
-    case channel_cmd_name_t_STOP_HOLD:        *out = COSMO_BTN_STOP_HOLD; break;
-    case channel_cmd_name_t_PROG:             *out = COSMO_BTN_PROG; break;
-    case channel_cmd_name_t_STOP_UP:          *out = COSMO_BTN_STOP_UP; break;
-    case channel_cmd_name_t_REQUEST_FEEDBACK: *out = COSMO_BTN_REQUEST_FEEDBACK; break;
-    case channel_cmd_name_t_REQUEST_POSITION: *out = COSMO_BTN_REQUEST_POSITION; break;
-    case channel_cmd_name_t_SET_POSITION:     *out = COSMO_BTN_SET_POSITION; break;
-    case channel_cmd_name_t_SET_TILT:         *out = COSMO_BTN_SET_TILT; break;
-    case channel_cmd_name_t_TILT_INCREASE:    *out = COSMO_BTN_TILT_INCREASE; break;
-    case channel_cmd_name_t_TILT_DECREASE:    *out = COSMO_BTN_TILT_DECREASE; break;
-    default: return false;
-    }
-    return true;
-}
 
 /* ── Incoming WS message dispatch ───────────────────────────────────────── */
 
@@ -396,7 +373,7 @@ static void ws_dispatch(int fd, const char *text)
     case ws_client_message_t_channel_cmd: {
         const struct ws_channel_cmd_msg_t *m = &msg.value.channel_cmd;
         cosmo_cmd_t cosmo_cmd;
-        if (!cmd_name_to_cosmo(m->cmd_name, &cosmo_cmd)) break;
+        if (!utils_cmd_name_to_cosmo(m->cmd_name, &cosmo_cmd)) break;
         uint8_t extra = m->has_extra_payload ? (uint8_t)m->extra_payload : 0;
         channel_send_cmd(m->serial, cosmo_cmd, extra);
         background_worker_inhibit_position_query();
