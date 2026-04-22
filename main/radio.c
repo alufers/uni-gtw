@@ -1,7 +1,9 @@
 #include "radio.h"
+#include "radio_ops.h"
 #include "cc1101.h"
+#include "sx1262.h"
 #include "config.h"
-#include "cosmo.h"
+#include "cosmo/cosmo.h"
 #include "status_led.h"
 #include "webserver.h"
 #include "channel.h"
@@ -15,6 +17,7 @@
 #include "freertos/semphr.h"
 
 #include "driver/gpio.h"
+#include "driver/spi_master.h"
 #include "esp_log.h"
 
 static const char *TAG = "radio";
@@ -22,9 +25,9 @@ static const char *TAG = "radio";
 /* ── Event queue ─────────────────────────────────────────────────────────── */
 
 typedef enum {
-    RADIO_EVT_RX,    /* GDO0 falling edge: packet in RX FIFO */
-    RADIO_EVT_TX,    /* TX command from application task     */
-    RADIO_EVT_STOP,  /* Graceful shutdown signal             */
+    RADIO_EVT_RX,    /* IRQ edge on gpio_gdo0: packet ready */
+    RADIO_EVT_TX,    /* TX command from application task    */
+    RADIO_EVT_STOP,  /* Graceful shutdown signal            */
 } radio_evt_type_t;
 
 typedef struct {
@@ -33,40 +36,39 @@ typedef struct {
 } radio_evt_t;
 
 #define RADIO_QUEUE_DEPTH 8
+#define RADIO_RX_CHANNEL  0
 
-#define RADIO_RX_CHANNEL 0
-
-static QueueHandle_t     s_radio_queue      = NULL;
+static QueueHandle_t     s_radio_queue       = NULL;
 static TaskHandle_t      s_radio_task_handle = NULL;
-static SemaphoreHandle_t s_stop_sem         = NULL;
-static int               s_active_gdo0      = -1;
-static bool              s_initialized      = false;
-static bool              s_isr_installed    = false;
-static radio_state_t     s_radio_state      = RADIO_STATE_NOT_CONFIGURED;
+static SemaphoreHandle_t s_stop_sem          = NULL;
+static int               s_active_irq_gpio   = -1;
+static bool              s_initialized       = false;
+static bool              s_isr_installed     = false;
+static radio_state_t     s_radio_state       = RADIO_STATE_NOT_CONFIGURED;
+
+static const radio_ops_t *s_ops = NULL;
 
 /* Snapshot of the config that is currently running in hardware */
-typedef struct {
-    bool enabled;
-    int  gpio_miso, gpio_mosi, gpio_sck, gpio_csn, gpio_gdo0, spi_freq_hz;
-} radio_hw_cfg_t;
-
 static radio_hw_cfg_t s_active_cfg;
 
 /* Must be called with config_lock() held. */
 static void radio_hw_cfg_from_config(radio_hw_cfg_t *out)
 {
     out->enabled     = g_config.radio.enabled;
+    out->type        = g_config.radio.type;
     out->gpio_miso   = g_config.radio.gpio_miso;
     out->gpio_mosi   = g_config.radio.gpio_mosi;
     out->gpio_sck    = g_config.radio.gpio_sck;
     out->gpio_csn    = g_config.radio.gpio_csn;
     out->gpio_gdo0   = g_config.radio.gpio_gdo0;
+    out->gpio_rst    = g_config.radio.gpio_rst;
+    out->gpio_busy   = g_config.radio.gpio_busy;
     out->spi_freq_hz = g_config.radio.spi_freq_hz;
 }
 
 /* ── ISR ─────────────────────────────────────────────────────────────────── */
 
-static void IRAM_ATTR gdo0_isr(void *arg)
+static void IRAM_ATTR radio_irq_isr(void *arg)
 {
     radio_evt_t evt = { .type = RADIO_EVT_RX };
     BaseType_t woken = pdFALSE;
@@ -91,38 +93,21 @@ static void bytes_to_bin(const uint8_t *data, int len, char *out)
 
 static void radio_handle_rx(void)
 {
-    uint8_t rxbytes = cc1101_get_rxbytes();
+    uint8_t  buf[COSMO_RAW_PACKET_LEN];
+    int8_t   rssi_dbm    = 0;
+    int16_t  freq_off_khz = 0;
 
-    if ((rxbytes & 0x80) || (rxbytes & 0x7F) < COSMO_RAW_PACKET_LEN + COSMO_STATUS_BYTES) {
-        ESP_LOGW(TAG, "RX FIFO issue (RXBYTES=0x%02X), flushing", rxbytes);
-        cc1101_enter_idle();
-        cc1101_flush_rx();
-        cc1101_set_channel(RADIO_RX_CHANNEL);
-        cc1101_enter_rx();
-        return;
-    }
+    esp_err_t err = s_ops->handle_rx_irq(buf, COSMO_RAW_PACKET_LEN,
+                                         &rssi_dbm, &freq_off_khz);
+    if (err != ESP_OK) return;  /* driver already reset RX internally */
 
-    uint8_t buf[COSMO_RAW_PACKET_LEN + COSMO_STATUS_BYTES];
-    cc1101_read_rxfifo(buf, sizeof(buf));
-
-    int8_t  freqest      = cc1101_get_freqest();
-    int16_t freq_off_khz = (int16_t)(((int32_t)freqest * 26000) / 16384);
-
-    cc1101_set_channel(RADIO_RX_CHANNEL);
-    cc1101_enter_rx();
-
-    uint8_t rssi_raw = buf[COSMO_RAW_PACKET_LEN];
-    int8_t  rssi_dbm = (rssi_raw >= 128)
-                       ? ((int8_t)(rssi_raw - 256) / 2) - 74
-                       : (int8_t)(rssi_raw / 2) - 74;
+    char bin[COSMO_RAW_PACKET_LEN * 9];
+    bytes_to_bin(buf, COSMO_RAW_PACKET_LEN, bin);
+    gtw_console_log("RX BIN: %s", bin);
 
     cosmo_raw_packet_t raw;
     memcpy(raw.data, buf, COSMO_RAW_PACKET_LEN);
     raw.rssi = rssi_dbm;
-
-    char bin[COSMO_RAW_PACKET_LEN * 9];
-    bytes_to_bin(raw.data, COSMO_RAW_PACKET_LEN, bin);
-    gtw_console_log("RX BIN: %s", bin);
 
     cosmo_packet_t pkt;
     esp_err_t decode_err = cosmo_decode(&raw, &pkt);
@@ -135,7 +120,7 @@ static void radio_handle_rx(void)
     } else {
         gtw_console_log("RADIO: bad pkt  rssi=%d dBm", (int)rssi_dbm);
     }
-    webserver_ws_broadcast_packet(false, raw.data, COSMO_RAW_PACKET_LEN,
+    webserver_ws_broadcast_packet(false, buf, COSMO_RAW_PACKET_LEN,
                                   decode_err == ESP_OK,
                                   decode_err == ESP_OK ? &pkt : NULL);
 }
@@ -145,12 +130,7 @@ static void radio_handle_rx(void)
 static void radio_do_tx(const cosmo_packet_t *pkt)
 {
     int total = 1 + (int)pkt->repeat;
-
     status_led_on_tx();
-    cc1101_enter_idle();
-    cc1101_flush_tx();
-    cc1101_flush_rx();
-    cc1101_set_channel(pkt->proto == PROTO_COSMO_2WAY ? 1 : 0);
 
     cosmo_raw_packet_t raw;
     for (int i = 0; i < total; i++) {
@@ -163,28 +143,18 @@ static void radio_do_tx(const cosmo_packet_t *pkt)
         bytes_to_bin(raw.data, COSMO_RAW_PACKET_LEN, bin);
         gtw_console_log("TX BIN [%d/%d]: %s", i + 1, total, bin);
 
-        cc1101_enter_idle();
-        cc1101_flush_tx();
-        cc1101_write_txfifo(raw.data, COSMO_RAW_PACKET_LEN);
-        cc1101_start_tx();
-
-        for (int w = 0; w < 30; w++) {
-            vTaskDelay(pdMS_TO_TICKS(5));
-            if (cc1101_get_marcstate() != 0x13)
-                break;
-        }
+        s_ops->enter_idle();
+        s_ops->set_channel(pkt->proto == PROTO_COSMO_2WAY ? 1 : 0);
+        s_ops->transmit(raw.data, COSMO_RAW_PACKET_LEN);
     }
 
-    cc1101_enter_idle();
-    cc1101_set_channel(RADIO_RX_CHANNEL);
-    cc1101_flush_rx();
-    cc1101_enter_rx();
+    s_ops->set_channel(RADIO_RX_CHANNEL);
+    s_ops->enter_rx();
 
     char pkt_str[128];
     cosmo_packet_to_str(pkt, pkt_str, sizeof(pkt_str));
     gtw_console_log("RADIO: TX x%d  %s", total, pkt_str);
 
-    /* Broadcast packet_tx over WebSocket (use last encoded raw bytes) */
     webserver_ws_broadcast_packet(true, raw.data, COSMO_RAW_PACKET_LEN, true, pkt);
 }
 
@@ -220,9 +190,9 @@ static void radio_do_deinit(void)
     if (!s_initialized) return;
 
     /* Remove ISR first so no new RX events enter the queue */
-    if (s_active_gdo0 >= 0) {
-        gpio_isr_handler_remove(s_active_gdo0);
-        s_active_gdo0 = -1;
+    if (s_active_irq_gpio >= 0) {
+        gpio_isr_handler_remove(s_active_irq_gpio);
+        s_active_irq_gpio = -1;
     }
 
     /* Signal task to stop and wait for it to acknowledge */
@@ -237,7 +207,12 @@ static void radio_do_deinit(void)
 
     if (s_radio_queue) { vQueueDelete(s_radio_queue); s_radio_queue = NULL; }
 
-    cc1101_deinit();
+    if (s_ops) {
+        s_ops->deinit();
+        s_ops = NULL;
+    }
+
+    spi_bus_free(SPI2_HOST);
 
     s_initialized = false;
     s_radio_state = RADIO_STATE_NOT_CONFIGURED;
@@ -259,36 +234,48 @@ static esp_err_t radio_do_init(const radio_hw_cfg_t *hw)
         return ESP_ERR_NO_MEM;
     }
 
-    cc1101_config_t cc_cfg = {
-        .gpio_miso   = hw->gpio_miso,
-        .gpio_mosi   = hw->gpio_mosi,
-        .gpio_sck    = hw->gpio_sck,
-        .gpio_csn    = hw->gpio_csn,
-        .gpio_gdo0   = hw->gpio_gdo0,
-        .spi_freq_hz = hw->spi_freq_hz,
+    /* ── SPI bus (owned by radio.c for the lifetime of this init) ── */
+    spi_bus_config_t buscfg = {
+        .sclk_io_num   = hw->gpio_sck,
+        .mosi_io_num   = hw->gpio_mosi,
+        .miso_io_num   = hw->gpio_miso,
+        .quadwp_io_num = -1,
+        .quadhd_io_num = -1,
     };
-
-    esp_err_t err = cc1101_init(&cc_cfg);
+    esp_err_t err = spi_bus_initialize(SPI2_HOST, &buscfg, SPI_DMA_CH_AUTO);
     if (err != ESP_OK) {
+        ESP_LOGE(TAG, "spi_bus_initialize failed: %s", esp_err_to_name(err));
         vQueueDelete(s_radio_queue);
         s_radio_queue = NULL;
         s_radio_state = RADIO_STATE_ERROR;
         return err;
     }
 
+    /* ── Select driver ── */
+    s_ops = (hw->type == radio_type_t_sx1262) ? sx1262_get_ops() : cc1101_get_ops();
+
+    err = s_ops->init(hw, SPI2_HOST);
+    if (err != ESP_OK) {
+        s_ops = NULL;
+        vQueueDelete(s_radio_queue);
+        s_radio_queue = NULL;
+        spi_bus_free(SPI2_HOST);
+        s_radio_state = RADIO_STATE_ERROR;
+        return err;
+    }
+
+    /* ── Install GPIO ISR service (idempotent) ── */
     if (!s_isr_installed) {
         gpio_install_isr_service(0);
         s_isr_installed = true;
     }
-    s_active_gdo0 = hw->gpio_gdo0;
-    gpio_isr_handler_add(s_active_gdo0, gdo0_isr, NULL);
+    s_active_irq_gpio = hw->gpio_gdo0;
+    gpio_isr_handler_add(s_active_irq_gpio, radio_irq_isr, NULL);
 
     xTaskCreate(radio_task, "radio", 4096, NULL, 10, &s_radio_task_handle);
-    cc1101_set_channel(RADIO_RX_CHANNEL);
-    cc1101_enter_rx();
-    s_active_cfg = *hw;
-    s_initialized = true;
-    s_radio_state = RADIO_STATE_OK;
+    s_active_cfg    = *hw;
+    s_initialized   = true;
+    s_radio_state   = RADIO_STATE_OK;
     ESP_LOGI(TAG, "Radio initialised, entering RX");
     return ESP_OK;
 }

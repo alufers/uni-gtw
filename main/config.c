@@ -106,6 +106,8 @@ void config_init(void)
     /* Set defaults */
     g_config.mqtt.ha_discovery_enabled       = 1;
     g_config.mqtt.url                        = sstr("");
+    g_config.mqtt.username                   = sstr("");
+    g_config.mqtt.password                   = sstr("");
     g_config.position_status_query_interval_s = 60;
     g_config.gpio_status_led                 = -1;
 
@@ -118,12 +120,15 @@ void config_init(void)
     g_config.mqtt.mqtt_prefix = sstr("unigtw");
 
     /* Radio GPIO defaults */
-    g_config.radio.enabled    = 0;
-    g_config.radio.gpio_miso  = CONFIG_RADIO_DEFAULT_MISO;
-    g_config.radio.gpio_mosi  = CONFIG_RADIO_DEFAULT_MOSI;
-    g_config.radio.gpio_sck   = CONFIG_RADIO_DEFAULT_SCK;
-    g_config.radio.gpio_csn   = CONFIG_RADIO_DEFAULT_CSN;
-    g_config.radio.gpio_gdo0  = CONFIG_RADIO_DEFAULT_GDO0;
+    g_config.radio.enabled     = 0;
+    g_config.radio.type        = CONFIG_RADIO_DEFAULT_TYPE;
+    g_config.radio.gpio_miso   = CONFIG_RADIO_DEFAULT_MISO;
+    g_config.radio.gpio_mosi   = CONFIG_RADIO_DEFAULT_MOSI;
+    g_config.radio.gpio_sck    = CONFIG_RADIO_DEFAULT_SCK;
+    g_config.radio.gpio_csn    = CONFIG_RADIO_DEFAULT_CSN;
+    g_config.radio.gpio_gdo0   = CONFIG_RADIO_DEFAULT_GDO0;
+    g_config.radio.gpio_rst    = CONFIG_RADIO_DEFAULT_RST;
+    g_config.radio.gpio_busy   = CONFIG_RADIO_DEFAULT_BUSY;
     g_config.radio.spi_freq_hz = CONFIG_RADIO_DEFAULT_SPI_FREQ;
 
     set_default_hostname();

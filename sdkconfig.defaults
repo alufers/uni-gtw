@@ -1,4 +1,10 @@
 CONFIG_HTTPD_WS_SUPPORT=y
+# Custom partition table with OTA + LittleFS
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+# Heltec v4 has 16MB flash
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
 # Timer daemon task stack — must accommodate config_do_save() + maybe_query_position()
 CONFIG_FREERTOS_TIMER_TASK_STACK_DEPTH=4096
 # Use USB JTAG as the primary interactive console (REPL)

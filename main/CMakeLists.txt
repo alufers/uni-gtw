@@ -26,6 +26,7 @@ idf_component_register(
         "webserver.c"
         "wifi_manager.c"
         "cc1101.c"
+        "sx1262.c"
         "radio.c"
         "channel.c"
         "config.c"
