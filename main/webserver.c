@@ -411,58 +411,65 @@ static void ws_dispatch(int fd, const char *text)
     ws_client_message_t_clear(&msg);
 }
 
-/* ── WebSocket handler ───────────────────────────────────────────────────── */
+/* ── WebSocket handlers ───────────────────────────────────────────────────── */
+
+
+static esp_err_t ws_pre_handshake_cb(httpd_req_t *req)
+{
+    config_lock();
+    bool pw_enabled = g_config.web_password_enabled;
+    config_unlock();
+    if (pw_enabled) {
+        char query[256] = {0};
+        char auth_buf[128] = {0};
+        httpd_req_get_url_query_str(req, query, sizeof(query));
+        httpd_query_key_value(query, "auth", auth_buf, sizeof(auth_buf));
+        config_lock();
+        bool ok = utils_crypto_verify_password(auth_buf,
+                                               sstr_cstr(g_config.web_password));
+        config_unlock();
+        if (!ok) {
+            httpd_resp_set_hdr(req, "WWW-Authenticate", "X-Auth");
+            httpd_resp_send_err(req, HTTPD_401_UNAUTHORIZED, "Unauthorized");
+            return ESP_FAIL;
+        }
+    }
+
+    return ESP_OK;
+}
+
+static esp_err_t ws_post_handshake_cb(httpd_req_t *req)
+{
+    int fd = httpd_req_to_sockfd(req);
+
+    xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
+    bool has_slot = false;
+    for (int i = 0; i < MAX_WS_CLIENTS; i++) {
+        if (s_ws_fds[i] == -1) { has_slot = true; break; }
+    }
+    xSemaphoreGive(s_ws_mutex);
+
+    if (!has_slot) {
+        ESP_LOGW(TAG, "WS client list full, dropping fd=%d", fd);
+        return ESP_OK;
+    }
+
+    ws_send_history(fd);
+    channel_send_all(fd);
+    build_and_send_status(fd);
+
+    xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
+    for (int i = 0; i < MAX_WS_CLIENTS; i++) {
+        if (s_ws_fds[i] == -1) { s_ws_fds[i] = fd; break; }
+    }
+    xSemaphoreGive(s_ws_mutex);
+
+    ESP_LOGI(TAG, "WS client connected fd=%d", fd);
+    return ESP_OK;
+}
 
 static esp_err_t ws_handler(httpd_req_t *req)
 {
-    if (req->method == HTTP_GET) {
-        /* Auth check: read ?auth=<password> from the upgrade URL */
-        config_lock();
-        bool pw_enabled = g_config.web_password_enabled;
-        config_unlock();
-        if (pw_enabled) {
-            char query[256] = {0};
-            char auth_buf[128] = {0};
-            httpd_req_get_url_query_str(req, query, sizeof(query));
-            httpd_query_key_value(query, "auth", auth_buf, sizeof(auth_buf));
-            config_lock();
-            bool ok = utils_crypto_verify_password(auth_buf,
-                                                   sstr_cstr(g_config.web_password));
-            config_unlock();
-            if (!ok) {
-                httpd_resp_set_hdr(req, "WWW-Authenticate", "X-Auth");
-                httpd_resp_send_err(req, HTTPD_401_UNAUTHORIZED, "Unauthorized");
-                return ESP_OK;
-            }
-        }
-
-        int fd = httpd_req_to_sockfd(req);
-
-        xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
-        bool has_slot = false;
-        for (int i = 0; i < MAX_WS_CLIENTS; i++) {
-            if (s_ws_fds[i] == -1) { has_slot = true; break; }
-        }
-        xSemaphoreGive(s_ws_mutex);
-
-        if (!has_slot) {
-            ESP_LOGW(TAG, "WS client list full, dropping fd=%d", fd);
-            return ESP_OK;
-        }
-
-        ws_send_history(fd);
-        channel_send_all(fd);
-        build_and_send_status(fd);
-
-        xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
-        for (int i = 0; i < MAX_WS_CLIENTS; i++) {
-            if (s_ws_fds[i] == -1) { s_ws_fds[i] = fd; break; }
-        }
-        xSemaphoreGive(s_ws_mutex);
-
-        ESP_LOGI(TAG, "WS client connected fd=%d", fd);
-        return ESP_OK;
-    }
 
     httpd_ws_frame_t frame = { .type = HTTPD_WS_TYPE_TEXT };
     esp_err_t ret = httpd_ws_recv_frame(req, &frame, 0);
@@ -853,6 +860,8 @@ void webserver_start(void)
         .method       = HTTP_GET,
         .handler      = ws_handler,
         .is_websocket = true,
+        .ws_pre_handshake_cb = ws_pre_handshake_cb,
+        .ws_post_handshake_cb = ws_post_handshake_cb,
     };
     static const httpd_uri_t uri_settings_get = {
         .uri    = "/api/settings",

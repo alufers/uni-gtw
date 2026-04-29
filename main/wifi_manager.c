@@ -102,8 +102,8 @@ static esp_err_t start_ap_mode(void)
 static esp_err_t start_sta_mode(const char *ssid, const char *pass)
 {
     wifi_config_t sta_cfg = {0};
-    snprintf((char *)sta_cfg.sta.ssid,     sizeof(sta_cfg.sta.ssid),     "%s", ssid);
-    snprintf((char *)sta_cfg.sta.password, sizeof(sta_cfg.sta.password), "%s", pass);
+    snprintf((char *)sta_cfg.sta.ssid,     sizeof(sta_cfg.sta.ssid)+1,     "%s", ssid);
+    snprintf((char *)sta_cfg.sta.password, sizeof(sta_cfg.sta.password)+1, "%s", pass);
     sta_cfg.sta.threshold.authmode = (strlen(pass) > 0) ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
 
     esp_err_t err = esp_wifi_set_mode(WIFI_MODE_STA);
